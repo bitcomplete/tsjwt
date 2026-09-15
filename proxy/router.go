@@ -133,7 +133,7 @@ func NewRouter(routes ...Route) (*Router, error) {
 	return &Router{routes: out}, nil
 }
 
-// Routes returns the configured routes, in declaration order.
+// Routes returns a copy of the configured routes, in declaration order.
 func (r *Router) Routes() []Route {
 	out := make([]Route, len(r.routes))
 	copy(out, r.routes)
