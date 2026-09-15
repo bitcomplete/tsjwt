@@ -19,15 +19,22 @@ import (
 
 // Config configures a [Proxy].
 type Config struct {
-	// Upstream is the backend to forward to. Required.
+	// Router picks the backend and the audience per request. Either this
+	// or Upstream plus Audience is required.
+	//
+	// Prefer this. One signer in front of many backends is the shape that
+	// makes adoption cheap, and the audience has to be chosen by whatever
+	// chooses the backend, or a token for one would work at another.
+	Router *Router
+
+	// Upstream is the single backend to forward to. A shorthand for a
+	// Router with one route matching everything.
 	Upstream *url.URL
 
 	// Signer mints the assertion. Required.
 	Signer *signer.Signer
 
-	// Audience is the "aud" the minted token carries. It should name the
-	// upstream, so a token for one backend is not accepted by another.
-	// Required.
+	// Audience is the "aud" carried by tokens minted for Upstream.
 	Audience string
 
 	// Header is the header the assertion is injected into. Empty means
@@ -43,29 +50,50 @@ type Config struct {
 	Bearer bool
 
 	// TenantFrom selects the tenant for a request. Empty result means the
-	// identity's default tenant. Nil means always the default.
+	// identity's default tenant. Nil means always the default. A route
+	// that pins a tenant overrides this.
 	TenantFrom func(*http.Request) string
 
 	// Logger records refusals. Nil means slog.Default().
 	Logger *slog.Logger
 }
 
-// Proxy forwards requests to an upstream, carrying a fresh assertion.
+// Proxy forwards requests to a backend, carrying a fresh assertion.
 type Proxy struct {
-	cfg Config
-	rp  *httputil.ReverseProxy
+	cfg    Config
+	router *Router
+	// One reverse proxy per upstream, keyed by its URL, built once so a
+	// request does not allocate one.
+	rps map[string]*httputil.ReverseProxy
 	log *slog.Logger
 }
 
 // New validates cfg and returns a proxy.
 func New(cfg Config) (*Proxy, error) {
-	switch {
-	case cfg.Upstream == nil:
-		return nil, fmt.Errorf("proxy: Upstream is required")
-	case cfg.Signer == nil:
+	if cfg.Signer == nil {
 		return nil, fmt.Errorf("proxy: Signer is required")
-	case strings.TrimSpace(cfg.Audience) == "":
-		return nil, fmt.Errorf("proxy: Audience is required")
+	}
+	router := cfg.Router
+	if router == nil {
+		// The single-upstream shorthand: one route that matches
+		// everything.
+		if cfg.Upstream == nil {
+			return nil, fmt.Errorf("proxy: either Router or Upstream is required")
+		}
+		if strings.TrimSpace(cfg.Audience) == "" {
+			return nil, fmt.Errorf("proxy: Audience is required alongside Upstream")
+		}
+		var err error
+		router, err = NewRouter(Route{
+			Name:     "default",
+			Upstream: cfg.Upstream,
+			Audience: cfg.Audience,
+		})
+		if err != nil {
+			return nil, err
+		}
+	} else if cfg.Upstream != nil {
+		return nil, fmt.Errorf("proxy: set Router or Upstream, not both")
 	}
 	if cfg.Header == "" {
 		cfg.Header = tsjwt.DefaultHeader
@@ -74,13 +102,22 @@ func New(cfg Config) (*Proxy, error) {
 		cfg.Logger = slog.Default()
 	}
 	p := &Proxy{
-		cfg: cfg,
-		log: cfg.Logger,
-		rp:  httputil.NewSingleHostReverseProxy(cfg.Upstream),
+		cfg:    cfg,
+		router: router,
+		rps:    make(map[string]*httputil.ReverseProxy),
+		log:    cfg.Logger,
 	}
-	p.rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		p.log.Error("upstream failed", "err", err, "path", r.URL.Path)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+	for _, rt := range router.Routes() {
+		key := rt.Upstream.String()
+		if _, built := p.rps[key]; built {
+			continue
+		}
+		rp := httputil.NewSingleHostReverseProxy(rt.Upstream)
+		rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			p.log.Error("upstream failed", "upstream", key, "err", err, "path", r.URL.Path)
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+		}
+		p.rps[key] = rp
 	}
 	return p, nil
 }
@@ -99,11 +136,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// order that is correct under both.
 	tsjwt.StripAssertion(r, p.cfg.Header)
 
-	var tenant string
-	if p.cfg.TenantFrom != nil {
+	route, ok := p.router.Match(r)
+	if !ok {
+		// No route is a routing failure, not an authorization one, and
+		// it must not mint a token: there is no audience to mint it for.
+		p.log.Warn("no route", "host", r.Host, "path", r.URL.Path, "remote", r.RemoteAddr)
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	tenant := route.Tenant
+	if tenant == "" && p.cfg.TenantFrom != nil {
 		tenant = p.cfg.TenantFrom(r)
 	}
-	tok, claims, err := p.cfg.Signer.Mint(r.RemoteAddr, p.cfg.Audience, tenant)
+	tok, claims, err := p.cfg.Signer.Mint(r.RemoteAddr, route.Audience, tenant)
 	if err != nil {
 		p.refuse(w, r, err)
 		return
@@ -115,8 +161,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p.log.Info("assertion minted",
 		"sub", claims.Subject, "tenant", claims.Tenant,
-		"roles", claims.Roles, "aud", claims.Audience, "jti", claims.ID)
-	p.rp.ServeHTTP(w, r)
+		"roles", claims.Roles, "aud", claims.Audience, "jti", claims.ID,
+		"route", route.Name)
+	p.rps[route.Upstream.String()].ServeHTTP(w, r)
 }
 
 // refuse maps a mint failure to a status. The body stays generic; the reason
