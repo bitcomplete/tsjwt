@@ -51,6 +51,7 @@ func run() error {
 		tenantCfg = flag.String("tenants", "", "path to the tenant policy JSON file (required)")
 		listen    = flag.String("listen", ":443", "tailnet address to listen on")
 		allowTags = flag.Bool("allow-tagged", false, "issue tokens to tagged nodes as well as people")
+		jwksLocal = flag.String("jwks-listen", "", "also serve ONLY the key set on this ordinary address, for in-cluster verifiers")
 	)
 	flag.Parse()
 
@@ -152,6 +153,36 @@ func run() error {
 	}
 
 	go rotateLoop(ctx, keySet, *rotate)
+
+	// A backend has to fetch the key set, and it is not on the tailnet:
+	// it sits behind this process. The tailnet listener cannot serve it,
+	// so expose the key set, and nothing else, on an ordinary address.
+	//
+	// This is safe to expose more widely than the proxy. The set holds
+	// only public keys, and a verifier must be able to fetch it without
+	// a credential. Serving it is not a weakening of the model; refusing
+	// to serve it would just move the problem.
+	if *jwksLocal != "" {
+		jm := http.NewServeMux()
+		jm.Handle("/.well-known/jwks.json", signer.JWKSHandler(keySet, *overlap/2))
+		js := &http.Server{
+			Addr:              *jwksLocal,
+			Handler:           jm,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			slog.Info("serving key set", "listen", *jwksLocal)
+			if err := js.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("key set listener", "err", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = js.Shutdown(sctx)
+		}()
+	}
 
 	go func() {
 		<-ctx.Done()
