@@ -1,0 +1,22 @@
+{
+  "tenants": [
+    {
+      "id": "bitcomplete",
+      "name": "Bit Complete",
+      "default": true,
+      "groups": {
+        "group:k8s-admin": "admin",
+        "group:grafana-editor": "editor"
+      }
+    },
+    {
+      "id": "hiringloop",
+      "name": "Hiring Loop",
+      "groups": {
+        "group:hiringloop-admin": "admin",
+        "group:hiringloop-user": "member"
+      }
+    }
+  ],
+  "defaultRole": "viewer"
+}
