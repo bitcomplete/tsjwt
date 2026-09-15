@@ -137,18 +137,21 @@ jobs:
           set -euo pipefail
           # Concurrency 64 is the shape that exposed the transport bug.
           hey -n 8000 -c 64 -t 20 http://127.0.0.1:8099/ | tee /tmp/hey.txt
-          non200=$(grep -oE '^\s+\[[0-9]+\]\s+[0-9]+' /tmp/hey.txt \
-                   | grep -v '\[200\]' | awk '{s+=$2} END {print s+0}')
-          if [ "$non200" -ne 0 ]; then
-            echo "::error::$non200 non-200 responses under load"
+          # A grep that matches nothing exits 1, and pipefail would treat
+          # that as the job failing. So count with awk, which always exits 0,
+          # rather than filtering with grep -v.
+          ok=$(awk '/\[200\]/ {s+=$2} END {print s+0}' /tmp/hey.txt)
+          all=$(awk '/^ +\[[0-9]+\]/ {s+=$2} END {print s+0}' /tmp/hey.txt)
+          echo "200s: $ok of $all"
+          if [ "$ok" -ne "$all" ]; then
+            echo "::error::$(( all - ok )) non-200 responses under load"
             exit 1
           fi
           # hey splits -n across -c by integer division, so the expected
           # count is floor(n/c)*c, not n.
-          got=$(grep -oE '^\s+\[200\]\s+[0-9]+' /tmp/hey.txt | awk '{print $2}')
           want=$(( (8000 / 64) * 64 ))
-          [ "$got" -eq "$want" ] || { echo "::error::got $got 200s, want $want"; exit 1; }
-          echo "load test clean: $got/$want"
+          [ "$ok" -eq "$want" ] || { echo "::error::got $ok 200s, want $want"; exit 1; }
+          echo "load test clean: $ok/$want"
 
       - name: Load test through key rotation
         run: |
@@ -162,10 +165,11 @@ jobs:
             sleep 1
           done
           hey -n 6000 -c 32 -t 20 http://127.0.0.1:8098/ | tee /tmp/hey-rot.txt
-          non200=$(grep -oE '^\s+\[[0-9]+\]\s+[0-9]+' /tmp/hey-rot.txt \
-                   | grep -v '\[200\]' | awk '{s+=$2} END {print s+0}')
-          if [ "$non200" -ne 0 ]; then
-            echo "::error::$non200 non-200 responses across key rotation"
+          ok=$(awk '/\[200\]/ {s+=$2} END {print s+0}' /tmp/hey-rot.txt)
+          all=$(awk '/^ +\[[0-9]+\]/ {s+=$2} END {print s+0}' /tmp/hey-rot.txt)
+          echo "200s across rotation: $ok of $all"
+          if [ "$ok" -ne "$all" ]; then
+            echo "::error::$(( all - ok )) non-200 responses across key rotation"
             exit 1
           fi
           echo "rotation under load clean"
@@ -174,5 +178,5 @@ jobs:
         if: always()
         run: |
           { echo '## Load test'; echo; echo '```';
-            grep -E 'Requests/sec|Average|slowest|^\s+\[' /tmp/hey.txt || true;
+            grep -E 'Requests/sec|Average|Slowest|^ +\[' /tmp/hey.txt || true;
             echo '```'; } >> "$GITHUB_STEP_SUMMARY"
