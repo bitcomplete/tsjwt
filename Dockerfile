@@ -16,8 +16,15 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
       go build -trimpath -ldflags="-s -w" \
       -o /out/tsjwtd ./tsnetid/cmd/tsjwtd
+# The reference backend builds from the core module, so it carries no
+# Tailscale code at all. That is the point of it: it is what an adopting
+# service looks like.
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      go build -trimpath -ldflags="-s -w" \
+      -o /out/tsjwt-echo ./cmd/tsjwt-echo
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/tsjwtd /usr/local/bin/tsjwtd
+COPY --from=build /out/tsjwt-echo /usr/local/bin/tsjwt-echo
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/tsjwtd"]

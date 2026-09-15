@@ -1,0 +1,19 @@
+# gitleaks configuration for tsjwt.
+#
+# This repository holds no credentials by design: it is a library, and every
+# key it handles is generated at run time. The allowlist below exists only to
+# keep test fixtures from reading as secrets.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API key"
+regex = '''(?i)(?:key|api|token|secret|password)[a-z0-9_ .\-]{0,25}(?:=|>|:=|\|\|:|<=|=>|:)\s*['"]?([0-9a-z\-_=]{16,64})['"]?'''
+[rules.allowlist]
+paths = ['''.*_test\.go$''']
+description = """
+JWT test fixtures are base64url of public, non-secret JSON. For example
+eyJhbGciOiJFUzI1NiJ9 is {"alg":"ES256"}. They have the shape of a credential
+and none of the substance.
+"""
