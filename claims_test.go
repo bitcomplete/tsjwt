@@ -2,26 +2,27 @@ package tsjwt
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestClaimsRoundTripJSON(t *testing.T) {
 	original := Claims{
-		Issuer:   "https://example.com",
-		Subject:  "user123",
-		Audience: "myapp",
-		IssuedAt: time.Now().Unix(),
+		Issuer:    "https://example.com",
+		Subject:   "user123",
+		Audience:  "myapp",
+		IssuedAt:  time.Now().Unix(),
 		NotBefore: time.Now().Unix(),
-		Expiry:   time.Now().Add(time.Hour).Unix(),
-		ID:       "jti123",
-		Email:    "user@example.com",
-		Name:     "John Doe",
-		Node:     "node1",
-		Tenant:   "tenant1",
-		Tenants:  []string{"tenant1", "tenant2"},
-		Roles:    []string{"admin", "user"},
-		Groups:   []string{"group1", "group2"},
+		Expiry:    time.Now().Add(time.Hour).Unix(),
+		ID:        "jti123",
+		Email:     "user@example.com",
+		Name:      "John Doe",
+		Node:      "node1",
+		Tenant:    "tenant1",
+		Tenants:   []string{"tenant1", "tenant2"},
+		Roles:     []string{"admin", "user"},
+		Groups:    []string{"group1", "group2"},
 		Extra: map[string]any{
 			"custom_claim": "custom_value",
 			"nested": map[string]any{
@@ -84,7 +85,7 @@ func TestClaimsRoundTripJSON(t *testing.T) {
 
 func TestClaimsMarshalJSONRefusesReservedKeyInExtra(t *testing.T) {
 	tests := []struct {
-		name    string
+		name     string
 		extraKey string
 	}{
 		{"shadows iss", "iss"},
@@ -119,7 +120,8 @@ func TestClaimsMarshalJSONRefusesReservedKeyInExtra(t *testing.T) {
 			if err == nil {
 				t.Error("expected error for reserved key, got nil")
 			}
-			if err.Error() != "tsjwt: extra claim \""+tt.extraKey+"\" shadows a reserved claim" {
+			// json.Marshal wraps the error from MarshalJSON
+			if !strings.Contains(err.Error(), "extra claim") || !strings.Contains(err.Error(), "shadows") {
 				t.Errorf("unexpected error message: %v", err)
 			}
 		})
@@ -306,8 +308,14 @@ func TestClaimsEmptyExtraDoesNotAppearInJSON(t *testing.T) {
 		t.Fatalf("Unmarshal result failed: %v", err)
 	}
 
-	// Only reserved claims should be present
-	if len(result) > 4 {
-		t.Errorf("expected only standard claims, got extra keys: %v", result)
+	// Check that no custom claims are present (Extra should not add any keys)
+	// Standard fields may be present (iss, sub, aud, iat, exp, nbf, jti, etc)
+	for key := range result {
+		// All keys in result should be from the standard reserved set
+		if key != "iss" && key != "sub" && key != "aud" && key != "iat" && key != "nbf" &&
+			key != "exp" && key != "jti" && key != "email" && key != "name" && key != "node" &&
+			key != "tenant" && key != "tenants" && key != "roles" && key != "groups" {
+			t.Errorf("unexpected key in result: %s", key)
+		}
 	}
 }

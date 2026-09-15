@@ -82,6 +82,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Strip first, and unconditionally. This runs before any path that
 	// could return early, so no request can carry a caller-supplied
 	// assertion through, even one that is refused later.
+	//
+	// The Set below would today overwrite a caller-supplied value on its
+	// own, so this Del is not the only thing holding the property up.
+	// It stays because the property must not depend on that: a later
+	// change from Set to Add, or a second header name, would silently
+	// turn a redundant line into the only defence. Strip-then-set is the
+	// order that is correct under both.
 	tsjwt.StripAssertion(r, p.cfg.Header)
 
 	var tenant string

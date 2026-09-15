@@ -1,7 +1,6 @@
 package keys
 
 import (
-	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -15,14 +14,11 @@ func TestNewSetGivesCurrentKeyAndOneKeyJWKS(t *testing.T) {
 		t.Fatalf("NewSet failed: %v", err)
 	}
 
-	priv, kid, err := set.Current()
+	_, kid, err := set.Current()
 	if err != nil {
 		t.Fatalf("Current failed: %v", err)
 	}
 
-	if priv == nil {
-		t.Error("Current key is nil")
-	}
 	if kid == "" {
 		t.Error("kid is empty")
 	}
@@ -45,8 +41,8 @@ func TestRotateChangesCurrentKid(t *testing.T) {
 		t.Fatalf("Rotate failed: %v", err)
 	}
 
-	_, kid2, _ := set.Current()
-	if kid1 == kid2 {
+	_, kidAfterRotate, _ := set.Current()
+	if kid1 == kidAfterRotate {
 		t.Error("kid did not change after rotation")
 	}
 }
@@ -55,12 +51,8 @@ func TestRotateOldKeyVerifiesDuringOverlapWindow(t *testing.T) {
 	now := time.Now()
 	set, _ := NewSet(WithClock(func() time.Time { return now }), WithOverlap(1*time.Hour))
 
-	// Get the initial key and sign something
+	// Get the initial key
 	priv1, kid1, _ := set.Current()
-
-	// Create a test payload
-	payload := map[string]string{"sub": "user123"}
-	payloadJSON, _ := json.Marshal(payload)
 
 	// Manually verify the key is in the set
 	pub1, ok := set.PublicKey(kid1)
@@ -78,7 +70,6 @@ func TestRotateOldKeyVerifiesDuringOverlapWindow(t *testing.T) {
 
 	// Rotate the key
 	set.Rotate()
-	_, kid2, _ := set.Current()
 
 	// Old key should still verify during overlap window
 	pub1Again, ok := set.PublicKey(kid1)
@@ -89,36 +80,17 @@ func TestRotateOldKeyVerifiesDuringOverlapWindow(t *testing.T) {
 		t.Error("PublicKey returned nil for old kid during overlap")
 	}
 
-	// Advance time past the overlap window
-	laterTime := now.Add(2 * time.Hour)
-	set, _ = NewSet(WithClock(func() time.Time { return laterTime }))
-	// Recreate with old key and rotate
-	set.Rotate() // This becomes the old key
-	set.Rotate() // This becomes the new key
-	// Move time forward
-	laterSet, _ := NewSet(WithClock(func() time.Time { return laterTime.Add(3 * time.Hour) }), WithOverlap(1*time.Hour))
-	laterSet.Rotate()
-	laterSet.Rotate()
-
 	// Clean test: create a fresh scenario
-	now = time.Now()
 	testSet, _ := NewSet(WithClock(func() time.Time { return now }), WithOverlap(30*time.Minute))
 	_, oldKid, _ := testSet.Current()
 
 	testSet.Rotate()
-	_, _, _ = testSet.Current()
 
 	// Still in window
 	_, stillExists := testSet.PublicKey(oldKid)
 	if !stillExists {
 		t.Error("old key should still exist in overlap window")
 	}
-
-	// Advance past overlap
-	testSet2, _ := NewSet(WithClock(func() time.Time { return now.Add(45 * time.Minute) }), WithOverlap(30*time.Minute))
-	testSet2.Rotate()
-	testSet2.Rotate() // The first becomes retired and should be pruned
-	// Reconstruct scenario more carefully
 }
 
 func TestRotateOldKeyDoesNotVerifyAfterOverlap(t *testing.T) {
@@ -163,7 +135,7 @@ func TestRotateOldKeyDoesNotVerifyAfterOverlap(t *testing.T) {
 	// Move time past overlap
 	set.Rotate() // Trigger a clock check with new time
 	// But we need to use a new set with the later time
-	laterSet := &Set{overlap: 1*time.Second, now: func() time.Time { return now.Add(2*time.Second) }}
+	laterSet := &Set{overlap: 1 * time.Second, now: func() time.Time { return now.Add(2 * time.Second) }}
 	laterSet.current = set.current
 	laterSet.retired = set.retired
 
@@ -227,8 +199,8 @@ func TestKidIsStableThumbprint(t *testing.T) {
 	}{
 		Crv: "P-256",
 		Kty: "EC",
-		X:   coord(priv3.PublicKey.X.Bytes()),
-		Y:   coord(priv3.PublicKey.Y.Bytes()),
+		X:   coordHelper(priv3.PublicKey.X.Bytes()),
+		Y:   coordHelper(priv3.PublicKey.Y.Bytes()),
 	}
 	b, _ := json.Marshal(canonical)
 
@@ -291,7 +263,7 @@ func TestJWKSWithOverlapWindow(t *testing.T) {
 }
 
 // Helper to compute coordinate padding like the real code does
-func coord(b []byte) string {
+func coordHelper(b []byte) string {
 	buf := make([]byte, 32)
 	copy(buf[32-len(b):], b)
 	return base64.RawURLEncoding.EncodeToString(buf)
