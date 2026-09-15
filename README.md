@@ -21,6 +21,10 @@ are all supplied by the caller. The only shipped identity source reads a
 Tailscale tailnet, and it lives in a separate module so that nothing else
 depends on it.
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how the parts fit together and
+how this compares with tsidp, Pomerium and a shared secret.
+See [SECURITY.md](SECURITY.md) for the threat model.
+
 ## Design
 
 ```
@@ -178,3 +182,7 @@ name can be reassigned.
 ## Status
 
 Prototype, under active validation. The API may change.
+
+The one assumption that is not yet measured: that a hostile peer cannot
+change what the identity source reports about it. Everything else here rests
+on that. See [SECURITY.md](SECURITY.md).
