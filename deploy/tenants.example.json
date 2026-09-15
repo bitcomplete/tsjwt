@@ -1,8 +1,8 @@
 {
   "tenants": [
     {
-      "id": "bitcomplete",
-      "name": "Bit Complete",
+      "id": "acme",
+      "name": "Acme Corp",
       "default": true,
       "groups": {
         "group:acme-admin": "admin",
