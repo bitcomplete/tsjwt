@@ -49,6 +49,7 @@ func run() error {
 		audience   = flag.String("audience", "", "aud claim for minted tokens (required)")
 		issuer     = flag.String("issuer", "", "iss claim; defaults to https://<hostname>")
 		header     = flag.String("header", tsjwt.DefaultHeader, "header the assertion is injected into")
+		bearer     = flag.Bool("bearer", false, "write the assertion as \"Bearer <token>\"; pair with -header=Authorization for a gateway that only reads Authorization")
 		ttl        = flag.Duration("ttl", signer.DefaultTTL, "token lifetime")
 		rotate     = flag.Duration("rotate", 24*time.Hour, "signing key rotation interval")
 		overlap    = flag.Duration("overlap", time.Hour, "how long a retired key still verifies")
@@ -218,6 +219,7 @@ func run() error {
 		Signer:     sg,
 		Audience:   *audience,
 		Header:     *header,
+		Bearer:     *bearer,
 		TenantFrom: tenantFromRequest,
 	})
 	if err != nil {
