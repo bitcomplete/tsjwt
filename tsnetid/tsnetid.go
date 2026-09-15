@@ -26,6 +26,13 @@ import (
 
 // CapGroups is the default capability name read from a peer's grants to
 // discover its groups. An operator declares it in the tailnet policy file.
+//
+// It must actually be declared. Measured on 2026-09-15: WhoIs returns an
+// empty CapMap for both a user node and a tagged node when no grant names a
+// capability. A deployment that forgets the grant therefore sees every
+// caller in no group, which resolves to no tenant, which is a refusal. That
+// fails closed, but it fails silently, and it looks like a bug in the
+// resolver rather than a missing line in the policy file.
 const CapGroups = tailcfg.PeerCapability("bitcomplete.com/cap/tsjwt")
 
 // capRule is the shape this package expects inside the capability grant.
@@ -82,6 +89,21 @@ func (s *Source) Identify(remoteAddr string) (tsjwt.Identity, error) {
 	if who == nil || who.Node == nil {
 		return zero, fmt.Errorf("%w: whois returned no node", tsjwt.ErrNoIdentity)
 	}
+	// The tag check must come first, and it must be a tag check.
+	//
+	// Measured against a live tailnet on 2026-09-15: WhoIs on a tagged
+	// node does NOT return an empty user. It returns a complete,
+	// real-looking profile:
+	//
+	//	{"ID":1744579493730840,
+	//	 "LoginName":"tagged-devices",
+	//	 "DisplayName":"Tagged Devices"}
+	//
+	// That ID is shared by every tagged node in the tailnet. So an
+	// implementation that guards only on an empty UserProfile admits
+	// every tagged node, and collapses them all into one identity that
+	// looks like a person. Any workload holding any tag would then act
+	// as the same principal. Guard on the tag itself.
 	if who.Node.IsTagged() && !s.AllowTagged {
 		return zero, fmt.Errorf("%w: %s is a tagged node, not a person",
 			tsjwt.ErrNoIdentity, who.Node.Name)
