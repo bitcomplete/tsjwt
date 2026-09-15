@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -86,9 +87,9 @@ func TestVerifyFailures(t *testing.T) {
 	token, _ := Sign(key, "kid1", payload)
 
 	tests := []struct {
-		name       string
-		token      string
-		publicKey  *ecdsa.PublicKey
+		name        string
+		token       string
+		publicKey   *ecdsa.PublicKey
 		expectedErr error
 	}{
 		{
@@ -117,8 +118,8 @@ func TestVerifyFailures(t *testing.T) {
 			if err == nil {
 				t.Error("expected error, got nil")
 			}
-			if err != tt.expectedErr {
-				t.Errorf("expected error %v, got %v", tt.expectedErr, err)
+			if !errors.Is(err, tt.expectedErr) {
+				t.Errorf("expected error wrapping %v, got %v", tt.expectedErr, err)
 			}
 		})
 	}
@@ -149,8 +150,8 @@ func TestParseRejectsInvalidSegmentCount(t *testing.T) {
 			if err == nil {
 				t.Error("expected error, got nil")
 			}
-			if err != ErrMalformed {
-				t.Errorf("expected ErrMalformed, got %v", err)
+			if !errors.Is(err, ErrMalformed) {
+				t.Errorf("expected error wrapping ErrMalformed, got %v", err)
 			}
 		})
 	}
@@ -164,15 +165,15 @@ func TestParseRejectsNonBase64Header(t *testing.T) {
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
-	if err != ErrMalformed {
-		t.Errorf("expected ErrMalformed, got %v", err)
+	if !errors.Is(err, ErrMalformed) {
+		t.Errorf("expected error wrapping ErrMalformed, got %v", err)
 	}
 }
 
 func TestParseRejectsWrongAlgorithm(t *testing.T) {
 	tests := []struct {
-		name   string
-		alg    string
+		name string
+		alg  string
 	}{
 		{
 			name: "alg none",
@@ -196,14 +197,16 @@ func TestParseRejectsWrongAlgorithm(t *testing.T) {
 			payload := []byte(`{"sub":"user"}`)
 
 			// Create a fake token string (doesn't need to verify, just parse)
-			token := b64(hdrJSON) + "." + b64(payload) + ".fakesig"
+			hdrEncoded := base64.RawURLEncoding.EncodeToString(hdrJSON)
+			payloadEncoded := base64.RawURLEncoding.EncodeToString(payload)
+			token := hdrEncoded + "." + payloadEncoded + ".fakesig"
 
 			_, _, err := Parse(token)
 			if err == nil {
 				t.Error("expected error, got nil")
 			}
-			if err != ErrAlgorithm {
-				t.Errorf("expected ErrAlgorithm, got %v", err)
+			if !errors.Is(err, ErrAlgorithm) {
+				t.Errorf("expected error wrapping ErrAlgorithm, got %v", err)
 			}
 		})
 	}
@@ -229,14 +232,16 @@ func TestParseRejectsBadTyp(t *testing.T) {
 			hdr := Header{Alg: Alg, Typ: tt.typ, Kid: "test"}
 			hdrJSON, _ := json.Marshal(hdr)
 			payload := []byte(`{"sub":"user"}`)
-			token := b64(hdrJSON) + "." + b64(payload) + ".fakesig"
+			hdrEncoded := base64.RawURLEncoding.EncodeToString(hdrJSON)
+			payloadEncoded := base64.RawURLEncoding.EncodeToString(payload)
+			token := hdrEncoded + "." + payloadEncoded + ".fakesig"
 
 			_, _, err := Parse(token)
 			if err == nil {
 				t.Error("expected error, got nil")
 			}
-			if err != ErrMalformed {
-				t.Errorf("expected ErrMalformed, got %v", err)
+			if !errors.Is(err, ErrMalformed) {
+				t.Errorf("expected error wrapping ErrMalformed, got %v", err)
 			}
 		})
 	}
@@ -256,8 +261,8 @@ func TestVerifyRejectsBadSignatureLength(t *testing.T) {
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
-	if err != ErrMalformed {
-		t.Errorf("expected ErrMalformed, got %v", err)
+	if !errors.Is(err, ErrMalformed) {
+		t.Errorf("expected error wrapping ErrMalformed, got %v", err)
 	}
 }
 
@@ -281,9 +286,4 @@ func tamperedSignature(token string) string {
 		rawSig[0] ^= 0x01
 	}
 	return parts[0] + "." + parts[1] + "." + base64.RawURLEncoding.EncodeToString(rawSig)
-}
-
-// b64 and unb64 helpers for building test tokens
-func b64(b []byte) string {
-	return base64.RawURLEncoding.EncodeToString(b)
 }
