@@ -69,6 +69,12 @@ each workload into one principal that looks like a person.
 The test must be on the tag. The test must run before the code reads the
 user.
 
+**Replicas share public keys, never the private one.** Each replica makes its
+own signing key and keeps it in memory. Only public keys go to the shared
+store, so read access to that store gives an attacker nothing. Write access is
+still equivalent to holding a signing key, because a new public key could be
+added; protect writes accordingly.
+
 **Two limits on the lifetime.** The signer limits the lifetime. The verifier
 also refuses a token with a lifetime that is too long. The second limit does
 not trust the configuration of the first. A signer with a bad configuration
