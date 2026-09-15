@@ -57,6 +57,11 @@ func run() error {
 		capName   = flag.String("cap", string(tsnetid.CapGroups), "tailnet capability that carries the caller's groups")
 		plaintext = flag.Bool("plaintext", false, "serve HTTP instead of HTTPS on -listen; for a tailnet with no certificates")
 		redirect  = flag.String("redirect-listen", "", "serve permanent redirects to HTTPS on this address, conventionally :80")
+		keyTags   = flag.String("key-tags", "", "comma-separated tags for a key minted at startup; enables minting")
+		keyValid  = flag.Duration("key-validity", 90*24*time.Hour, "lifetime requested for a minted auth key")
+		keyBuffer = flag.Duration("key-buffer", time.Hour, "report unhealthy this long before the key expires")
+		splayMin  = flag.Duration("key-splay-min", 3*time.Minute, "low end of the per-process health splay")
+		splayMax  = flag.Duration("key-splay-max", 7*time.Minute, "high end of the per-process health splay")
 	)
 	flag.Parse()
 
@@ -91,12 +96,48 @@ func run() error {
 		return fmt.Errorf("key set: %w", err)
 	}
 
-	// The auth key is read from the environment, never a flag, so it does
-	// not appear in the process table.
+	// Credentials come from the environment, never a flag, so they do not
+	// appear in the process table.
+	authKey := os.Getenv("TS_AUTHKEY")
+	expiry := tsnetid.NewExpiry(time.Time{}, *keyBuffer, *splayMin, *splayMax)
+
+	// Prefer minting a key at startup over holding a static one.
+	//
+	// A static key expires on a date nobody is watching. The node keeps
+	// running long past it, because a tagged node does not expire its node
+	// key, so the failure only appears at the next restart — often months
+	// later, in the middle of something else. Minting at startup means the
+	// key in use is never older than the process.
+	if *keyTags != "" {
+		id, secret := os.Getenv("TS_OAUTH_CLIENT_ID"), os.Getenv("TS_OAUTH_CLIENT_SECRET")
+		if id == "" || secret == "" {
+			return errors.New("-key-tags is set, so TS_OAUTH_CLIENT_ID and " +
+				"TS_OAUTH_CLIENT_SECRET must both be set")
+		}
+		minter := &tsnetid.AuthKeyMinter{
+			ClientID:     id,
+			ClientSecret: secret,
+			Tags:         strings.Split(*keyTags, ","),
+			Validity:     *keyValid,
+		}
+		mctx, mcancel := context.WithTimeout(context.Background(), time.Minute)
+		minted, err := minter.Mint(mctx)
+		mcancel()
+		if err != nil {
+			return fmt.Errorf("mint auth key: %w", err)
+		}
+		authKey = minted.Key
+		expiry.Set(minted.Expires)
+		slog.Info("minted auth key at startup",
+			"expires", minted.Expires.UTC().Format(time.RFC3339),
+			"splay", expiry.Splay().String(),
+			"unhealthyAt", expiry.DeadlineAt().UTC().Format(time.RFC3339))
+	}
+
 	ts := &tsnet.Server{
 		Hostname: *hostname,
 		Dir:      *stateDir,
-		AuthKey:  os.Getenv("TS_AUTHKEY"),
+		AuthKey:  authKey,
 		Logf:     func(string, ...any) {}, // quiet; errors surface on Up
 	}
 	defer ts.Close()
@@ -145,7 +186,20 @@ func run() error {
 	// The key set is public by design: it holds only public keys, and a
 	// verifier must be able to fetch it without a credential.
 	mux.Handle("/.well-known/jwks.json", signer.JWKSHandler(keySet, *overlap/2))
+	// The health check fails before the key dies, not after.
+	//
+	// Failing early is what makes the restart a scheduled event rather than
+	// an outage: the orchestrator replaces the process while the current key
+	// still works, and the replacement mints a fresh one. The splay inside
+	// Expiry is drawn per process, so replicas started together do not all
+	// turn unhealthy in the same minute.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if !expiry.Healthy() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, "auth key expires %s; replace this process\n",
+				expiry.DeadlineAt().UTC().Format(time.RFC3339))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")
 	})
@@ -225,6 +279,9 @@ func run() error {
 	if *jwksLocal != "" {
 		jm := http.NewServeMux()
 		jm.Handle("/.well-known/jwks.json", signer.JWKSHandler(keySet, *overlap/2))
+		// The kubelet is not on the tailnet, so the probe endpoint has to
+		// live on the ordinary listener beside the key set.
+		jm.Handle("/healthz", mux)
 		js := &http.Server{
 			Addr:              *jwksLocal,
 			Handler:           jm,
