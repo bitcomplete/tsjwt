@@ -27,6 +27,7 @@ import (
 	"github.com/bitcomplete/tsjwt/proxy"
 	"github.com/bitcomplete/tsjwt/signer"
 	"github.com/bitcomplete/tsjwt/tsnetid"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
@@ -52,6 +53,7 @@ func run() error {
 		listen    = flag.String("listen", ":443", "tailnet address to listen on")
 		allowTags = flag.Bool("allow-tagged", false, "issue tokens to tagged nodes as well as people")
 		jwksLocal = flag.String("jwks-listen", "", "also serve ONLY the key set on this ordinary address, for in-cluster verifiers")
+		capName   = flag.String("cap", string(tsnetid.CapGroups), "tailnet capability that carries the caller's groups")
 	)
 	flag.Parse()
 
@@ -111,11 +113,15 @@ func run() error {
 	}
 
 	sg, err := signer.New(signer.Config{
-		Issuer:     *issuer,
-		Keys:       keySet,
-		Identities: &tsnetid.Source{Local: lc, AllowTagged: *allowTags},
-		Tenants:    policy,
-		TTL:        *ttl,
+		Issuer: *issuer,
+		Keys:   keySet,
+		Identities: &tsnetid.Source{
+			Local:       lc,
+			Cap:         tailcfg.PeerCapability(*capName),
+			AllowTagged: *allowTags,
+		},
+		Tenants: policy,
+		TTL:     *ttl,
 	})
 	if err != nil {
 		return err
