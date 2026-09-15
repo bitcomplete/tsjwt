@@ -110,6 +110,42 @@ configuration breaks this rule.
 A `kid` is the RFC 7638 thumbprint of the key. The key defines the `kid`, so
 you cannot use one `kid` for two keys.
 
+## More than one replica
+
+A replica makes its signing key at start and keeps it in memory. Two replicas
+therefore hold two different keys. A token from one would fail at a backend
+that read the key set from the other.
+
+The answer is not to share the private key. A shared private key is the
+authority to mint any identity in any tenant, and putting it in a store means
+anyone who can read that store holds that authority.
+
+Instead, each replica publishes only its **public** key to a shared store. The
+key set is the union of every live replica's keys, and `kid` selects the
+correct one. A verifier that meets an unknown `kid` fetches the set again.
+
+```
+replica A ──┐                      JWKS = union
+            ├──▶ shared store ────▶  kid-A, kid-B
+replica B ──┘   (public keys only)
+```
+
+A private key never leaves the process that made it. So:
+
+* A reader of the store gets nothing. It holds no secret.
+* A writer of the store can add a key of their own, and that is still full
+  compromise. Write access needs the same care as any signing material.
+
+Each entry carries a lease. A replica refreshes its own entries; a replica
+that stops is dropped after the lease **plus a grace period**. The grace must
+exceed the longest token lifetime, or a token from a replica that has just
+gone away stops verifying before it expires. The daemon refuses to start if
+the configuration breaks that rule.
+
+The shipped store (`k8sstore`) uses a Kubernetes ConfigMap, not a Secret. That
+is a statement, not an oversight: the data needs no protection, and the
+resource type makes that visible to anyone auditing the deployment.
+
 ## Why not tsidp
 
 Tailscale has an OIDC identity provider, `tsidp`. It looks like an answer to
