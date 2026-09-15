@@ -53,8 +53,10 @@ caller ──WireGuard──▶ signer ──X-Tailnet-Jwt-Assertion──▶ ba
 | `tsjwt/jwt` | stdlib | ES256 sign and verify, one algorithm only |
 | `tsjwt/keys` | stdlib | Rotating key set, RFC 7638 key ids, JWKS |
 | `tsjwt/signer` | stdlib | Mints assertions; serves JWKS |
-| `tsjwt/verifier` | stdlib | Checks assertions; HTTP middleware; replay guard |
+| `tsjwt/verifier` | stdlib | Checks assertions; remote JWKS; middleware; replay guard |
 | `tsjwt/proxy` | stdlib | The identity-aware reverse proxy |
+| `tsjwt/k8sstore` | stdlib | Shared key set in a Kubernetes ConfigMap |
+| `tsjwt/cmd/tsjwt-echo` | stdlib | Reference backend: verifies and echoes what it read |
 | `tsjwt/tsnetid` | tailscale.com | Tailnet identity source, and the `tsjwtd` daemon |
 
 The core module imports only the standard library. `tsnetid` is a separate Go
@@ -179,9 +181,20 @@ name can be reassigned.
 * **Revocation is expiry.** There is no deny list. The lifetime cap is the
   control, which is why it is short and enforced on both sides.
 
+## What this is not
+
+**It is not an Ingress controller or a Gateway API implementation.** There is
+no controller, no `GatewayClass`, nothing watching cluster resources. `tsjwtd`
+is a process you configure with flags, and it forwards to **one** upstream.
+
+Putting a second service behind it today means running a second instance. That
+is the honest state of adoption, and the shape that would fix it is a gateway
+in front of many backends — see
+[ARCHITECTURE.md](ARCHITECTURE.md#a-gateway-in-front-of-many-backends).
+
 ## Status
 
-Prototype, under active validation. The API may change.
+Prototype, running in one deployment. The API may change.
 
 The one assumption that is not yet measured: that a hostile peer cannot
 change what the identity source reports about it. Everything else here rests
