@@ -1,0 +1,22 @@
+{
+  "tenants": [
+    {
+      "id": "bitcomplete",
+      "name": "Bit Complete",
+      "default": true,
+      "groups": {
+        "group:acme-admin": "admin",
+        "group:acme-eng": "editor"
+      }
+    },
+    {
+      "id": "globex",
+      "name": "Globex",
+      "groups": {
+        "group:globex-admin": "admin",
+        "group:globex-user": "member"
+      }
+    }
+  ],
+  "defaultRole": "viewer"
+}
