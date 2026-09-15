@@ -19,11 +19,13 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/bitcomplete/tsjwt"
+	"github.com/bitcomplete/tsjwt/k8sstore"
 	"github.com/bitcomplete/tsjwt/keys"
 	"github.com/bitcomplete/tsjwt/proxy"
 	"github.com/bitcomplete/tsjwt/signer"
@@ -41,27 +43,30 @@ func main() {
 
 func run() error {
 	var (
-		hostname  = flag.String("hostname", "tsjwt", "tailnet hostname for this node")
-		stateDir  = flag.String("state-dir", "/var/lib/tsjwt", "directory for tailnet node state")
-		upstream  = flag.String("upstream", "", "backend URL to forward to (required)")
-		audience  = flag.String("audience", "", "aud claim for minted tokens (required)")
-		issuer    = flag.String("issuer", "", "iss claim; defaults to https://<hostname>")
-		header    = flag.String("header", tsjwt.DefaultHeader, "header the assertion is injected into")
-		ttl       = flag.Duration("ttl", signer.DefaultTTL, "token lifetime")
-		rotate    = flag.Duration("rotate", 24*time.Hour, "signing key rotation interval")
-		overlap   = flag.Duration("overlap", time.Hour, "how long a retired key still verifies")
-		tenantCfg = flag.String("tenants", "", "path to the tenant policy JSON file (required)")
-		listen    = flag.String("listen", ":443", "tailnet address to listen on")
-		allowTags = flag.Bool("allow-tagged", false, "issue tokens to tagged nodes as well as people")
-		jwksLocal = flag.String("jwks-listen", "", "also serve ONLY the key set on this ordinary address, for in-cluster verifiers")
-		capName   = flag.String("cap", string(tsnetid.CapGroups), "tailnet capability that carries the caller's groups")
-		plaintext = flag.Bool("plaintext", false, "serve HTTP instead of HTTPS on -listen; for a tailnet with no certificates")
-		redirect  = flag.String("redirect-listen", "", "serve permanent redirects to HTTPS on this address, conventionally :80")
-		keyTags   = flag.String("key-tags", "", "comma-separated tags for a key minted at startup; enables minting")
-		keyValid  = flag.Duration("key-validity", 90*24*time.Hour, "lifetime requested for a minted auth key")
-		keyBuffer = flag.Duration("key-buffer", time.Hour, "report unhealthy this long before the key expires")
-		splayMin  = flag.Duration("key-splay-min", 3*time.Minute, "low end of the per-process health splay")
-		splayMax  = flag.Duration("key-splay-max", 7*time.Minute, "high end of the per-process health splay")
+		hostname   = flag.String("hostname", "tsjwt", "tailnet hostname for this node")
+		stateDir   = flag.String("state-dir", "/var/lib/tsjwt", "directory for tailnet node state")
+		upstream   = flag.String("upstream", "", "backend URL to forward to (required)")
+		audience   = flag.String("audience", "", "aud claim for minted tokens (required)")
+		issuer     = flag.String("issuer", "", "iss claim; defaults to https://<hostname>")
+		header     = flag.String("header", tsjwt.DefaultHeader, "header the assertion is injected into")
+		ttl        = flag.Duration("ttl", signer.DefaultTTL, "token lifetime")
+		rotate     = flag.Duration("rotate", 24*time.Hour, "signing key rotation interval")
+		overlap    = flag.Duration("overlap", time.Hour, "how long a retired key still verifies")
+		tenantCfg  = flag.String("tenants", "", "path to the tenant policy JSON file (required)")
+		listen     = flag.String("listen", ":443", "tailnet address to listen on")
+		allowTags  = flag.Bool("allow-tagged", false, "issue tokens to tagged nodes as well as people")
+		jwksLocal  = flag.String("jwks-listen", "", "also serve ONLY the key set on this ordinary address, for in-cluster verifiers")
+		capName    = flag.String("cap", string(tsnetid.CapGroups), "tailnet capability that carries the caller's groups")
+		plaintext  = flag.Bool("plaintext", false, "serve HTTP instead of HTTPS on -listen; for a tailnet with no certificates")
+		redirect   = flag.String("redirect-listen", "", "serve permanent redirects to HTTPS on this address, conventionally :80")
+		keyTags    = flag.String("key-tags", "", "comma-separated tags for a key minted at startup; enables minting")
+		keyValid   = flag.Duration("key-validity", 90*24*time.Hour, "lifetime requested for a minted auth key")
+		keyBuffer  = flag.Duration("key-buffer", time.Hour, "report unhealthy this long before the key expires")
+		splayMin   = flag.Duration("key-splay-min", 3*time.Minute, "low end of the per-process health splay")
+		splayMax   = flag.Duration("key-splay-max", 7*time.Minute, "high end of the per-process health splay")
+		shareCM    = flag.String("share-keys", "", "publish verification keys to this Kubernetes ConfigMap, so more than one replica can serve")
+		shareLease = flag.Duration("share-lease", 2*time.Minute, "how long a published key stays fresh without a refresh")
+		shareGrace = flag.Duration("share-grace", 30*time.Minute, "how long a lapsed replica's keys are still served")
 	)
 	flag.Parse()
 
@@ -156,9 +161,46 @@ func run() error {
 		return fmt.Errorf("local client: %w", err)
 	}
 
+	// More than one replica needs every replica's verification keys in one
+	// published set, or a token minted by one fails at a backend that
+	// fetched the set from another.
+	//
+	// Only public keys are shared. Each replica's private key is generated
+	// here and never leaves this process, so a reader of the store cannot
+	// mint anything. That is why the store is a ConfigMap: it holds nothing
+	// that needs protecting, and saying so in the resource type makes the
+	// property visible rather than assumed.
+	var keySource signer.KeySource = keySet
+	var published *keys.Published
+	if *shareCM != "" {
+		if *shareGrace <= *ttl {
+			return fmt.Errorf("-share-grace (%s) must exceed -ttl (%s), or a token "+
+				"minted by a departing replica stops verifying before it expires",
+				*shareGrace, *ttl)
+		}
+		store, serr := k8sstore.New(*shareCM)
+		if serr != nil {
+			return serr
+		}
+		// The replica name must be unique per process. A pod name is.
+		replica := os.Getenv("POD_NAME")
+		if replica == "" {
+			replica = *hostname + "-" + strconv.Itoa(os.Getpid())
+		}
+		published, serr = keys.NewPublished(keySet, store, replica,
+			keys.WithLease(*shareLease), keys.WithGrace(*shareGrace))
+		if serr != nil {
+			return serr
+		}
+		keySource = published
+		slog.Info("sharing verification keys",
+			"configmap", *shareCM, "replica", replica,
+			"lease", shareLease.String(), "grace", shareGrace.String())
+	}
+
 	sg, err := signer.New(signer.Config{
 		Issuer: *issuer,
-		Keys:   keySet,
+		Keys:   keySource,
 		Identities: &tsnetid.Source{
 			Local:       lc,
 			Cap:         tailcfg.PeerCapability(*capName),
@@ -185,7 +227,7 @@ func run() error {
 	mux := http.NewServeMux()
 	// The key set is public by design: it holds only public keys, and a
 	// verifier must be able to fetch it without a credential.
-	mux.Handle("/.well-known/jwks.json", signer.JWKSHandler(keySet, *overlap/2))
+	mux.Handle("/.well-known/jwks.json", signer.JWKSHandler(keySource, *overlap/2))
 	// The health check fails before the key dies, not after.
 	//
 	// Failing early is what makes the restart a scheduled event rather than
@@ -237,6 +279,12 @@ func run() error {
 
 	go rotateLoop(ctx, keySet, *rotate)
 
+	if published != nil {
+		go published.Run(ctx, func(err error) {
+			slog.Error("publishing verification keys failed", "err", err)
+		})
+	}
+
 	// A plain listener whose only job is to send callers to the TLS one, so
 	// that a request to http:// does not silently succeed and teach the
 	// wrong habit.
@@ -278,7 +326,7 @@ func run() error {
 	// to serve it would just move the problem.
 	if *jwksLocal != "" {
 		jm := http.NewServeMux()
-		jm.Handle("/.well-known/jwks.json", signer.JWKSHandler(keySet, *overlap/2))
+		jm.Handle("/.well-known/jwks.json", signer.JWKSHandler(keySource, *overlap/2))
 		// The kubelet is not on the tailnet, so the probe endpoint has to
 		// live on the ordinary listener beside the key set.
 		jm.Handle("/healthz", mux)

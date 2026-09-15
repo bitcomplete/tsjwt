@@ -6,6 +6,7 @@
 package signer
 
 import (
+	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -33,8 +34,13 @@ type Config struct {
 	// URL. Required.
 	Issuer string
 
-	// Keys is the rotating key set to sign with. Required.
-	Keys *keys.Set
+	// Keys is the key source to sign with. Required.
+	//
+	// Both *keys.Set and *keys.Published satisfy this. The difference is
+	// what JWKS returns: one replica's keys, or every live replica's. The
+	// signer does not care, because signing only ever uses the local
+	// private key.
+	Keys KeySource
 
 	// Identities establishes who a caller is. Required.
 	Identities tsjwt.IdentitySource
@@ -52,6 +58,14 @@ type Config struct {
 
 	// Now replaces the time source. For tests.
 	Now func() time.Time
+}
+
+// KeySource provides the key to sign with and the set to publish.
+type KeySource interface {
+	// Current returns the private key to sign with, and its id.
+	Current() (*ecdsa.PrivateKey, string, error)
+	// JWKS returns the verification keys to publish.
+	JWKS() keys.JWKS
 }
 
 // Signer mints assertions.
@@ -161,8 +175,8 @@ func (s *Signer) Mint(remoteAddr, audience, tenant string) (string, tsjwt.Claims
 	return tok, claims, nil
 }
 
-// signClaims signs with the set's current key.
-func signClaims(set *keys.Set, c tsjwt.Claims) (string, error) {
+// signClaims signs with the source's current key.
+func signClaims(set KeySource, c tsjwt.Claims) (string, error) {
 	priv, kid, err := set.Current()
 	if err != nil {
 		return "", err
@@ -183,7 +197,7 @@ func newID() (string, error) {
 //
 // The response is cacheable, but for less than the key overlap window, or a
 // verifier can still hold a stale set when a key is retired.
-func JWKSHandler(set *keys.Set, cacheFor time.Duration) http.Handler {
+func JWKSHandler(set KeySource, cacheFor time.Duration) http.Handler {
 	if cacheFor <= 0 {
 		cacheFor = 5 * time.Minute
 	}
