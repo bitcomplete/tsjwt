@@ -146,6 +146,37 @@ The shipped store (`k8sstore`) uses a Kubernetes ConfigMap, not a Secret. That
 is a statement, not an oversight: the data needs no protection, and the
 resource type makes that visible to anyone auditing the deployment.
 
+## A gateway in front of many backends
+
+The signer is the identity edge: it is the tailnet node, and it is the only
+component that turns a network-verified caller into a token. It is not a
+router. Putting it in front of every service one at a time means a cutover
+per service, and it makes the signer a shared point of failure.
+
+A gateway solves that. The signer mints once, at the edge; the gateway
+verifies the token, routes to many backends, and can pass validated claims on
+as headers.
+
+```
+caller ──WireGuard──▶ signer ──JWT──▶ gateway ──▶ many backends
+                    (WhoIs, mint)   (verify, route,
+                                     claims to headers)
+```
+
+The gateway needs nothing from this project beyond the published key set,
+because the token is an ordinary `ES256` JWT and the key set is an ordinary
+JWKS. Envoy Gateway, for example, validates against `remoteJWKS.uri` and maps
+claims to headers with `ClaimToHeader`.
+
+Two details make that work:
+
+* **Write the token where the gateway reads it.** Many gateways read only
+  `Authorization: Bearer`. Use `-bearer` with `-header=Authorization`.
+* **A backend should still verify.** A gateway that verifies protects the
+  path through the gateway. A backend that verifies protects itself, whatever
+  path a request took. The second is what makes reaching a port prove
+  nothing.
+
 ## Why not tsidp
 
 Tailscale has an OIDC identity provider, `tsidp`. It looks like an answer to
