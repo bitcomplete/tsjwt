@@ -1,13 +1,20 @@
 # Build the daemon. The tsnetid module carries the Tailscale dependency; the
 # core module stays stdlib-only, so a backend that only verifies tokens does
 # not pull any of this in.
-FROM golang:1.25-alpine AS build
+#
+# The build stage pins to BUILDPLATFORM and cross-compiles to TARGETARCH.
+# Running the Go toolchain under emulation instead is not viable: the
+# compiler segfaults part-way through the Tailscale tree.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETARCH
+ARG TARGETOS=linux
 WORKDIR /src
 COPY go.mod go.work ./
 COPY tsnetid/go.mod tsnetid/go.sum ./tsnetid/
 RUN go mod download all
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      go build -trimpath -ldflags="-s -w" \
       -o /out/tsjwtd ./tsnetid/cmd/tsjwtd
 
 FROM gcr.io/distroless/static-debian12:nonroot

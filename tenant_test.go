@@ -2,6 +2,7 @@ package tsjwt
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -58,7 +59,7 @@ func TestTenantValidRejectsBadIDs(t *testing.T) {
 		},
 		{
 			name:      "max length valid",
-			id:        "a" + string(make([]byte, 61)) + "z", // 63 chars, all 'a' except last
+			id:        "a" + strings.Repeat("b", 61) + "z", // 63 chars
 			shouldErr: false,
 		},
 	}
@@ -103,7 +104,7 @@ func TestTenantAcceptsValidIDs(t *testing.T) {
 		{"my.tenant"},
 		{"a1b2c3"},
 		{"tenant-123"},
-		{"a" + string(make([]byte, 61)) + "z"}, // 63 chars
+		{"a" + strings.Repeat("b", 61) + "z"}, // 63 chars
 	}
 
 	for _, tt := range tests {
