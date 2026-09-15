@@ -204,6 +204,11 @@ func (v *Verifier) Middleware(header string, next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := r.Header.Get(header)
+		// Accept "Bearer <token>" as well as a bare token, so the same
+		// backend works behind a proxy that writes either.
+		if rest, ok := strings.CutPrefix(tok, "Bearer "); ok {
+			tok = rest
+		}
 		if tok == "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

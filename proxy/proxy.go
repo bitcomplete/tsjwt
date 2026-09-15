@@ -34,6 +34,14 @@ type Config struct {
 	// [tsjwt.DefaultHeader].
 	Header string
 
+	// Bearer writes the assertion as "Bearer <token>" instead of the bare
+	// token.
+	//
+	// Some verifiers only read Authorization: Bearer. Envoy's JWT filter
+	// is one, and that is the shape a gateway in front of many backends
+	// wants. Set Header to "Authorization" alongside this.
+	Bearer bool
+
 	// TenantFrom selects the tenant for a request. Empty result means the
 	// identity's default tenant. Nil means always the default.
 	TenantFrom func(*http.Request) string
@@ -100,7 +108,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.refuse(w, r, err)
 		return
 	}
-	r.Header.Set(p.cfg.Header, tok)
+	if p.cfg.Bearer {
+		r.Header.Set(p.cfg.Header, "Bearer "+tok)
+	} else {
+		r.Header.Set(p.cfg.Header, tok)
+	}
 	p.log.Info("assertion minted",
 		"sub", claims.Subject, "tenant", claims.Tenant,
 		"roles", claims.Roles, "aud", claims.Audience, "jti", claims.ID)
