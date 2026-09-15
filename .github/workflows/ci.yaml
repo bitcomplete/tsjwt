@@ -103,3 +103,80 @@ jobs:
         run: |
           { echo '## Benchmarks'; echo; echo '```'; cat /tmp/stat.txt; echo '```'; } \
             >> "$GITHUB_STEP_SUMMARY"
+
+  # Load testing, which finds a different class of bug from the benchmarks
+  # above. Benchmarks run one operation at a time, so they cannot see
+  # connection reuse, lock contention, or what happens while the signing key
+  # rotates under traffic. A load generator can.
+  #
+  # This job exists because it immediately found one: the default transport
+  # keeps two idle connections per host, and 2764 of 8000 requests at
+  # concurrency 64 returned 502 before that was fixed.
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.25'}
+
+      - name: Install hey
+        run: go install github.com/rakyll/hey@latest
+
+      - name: Start the target
+        run: |
+          go build -o /tmp/loadtarget ./internal/loadtarget
+          /tmp/loadtarget -listen 127.0.0.1:8099 &
+          for i in $(seq 30); do
+            curl -sf http://127.0.0.1:8099/ >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8099/ >/dev/null
+
+      - name: Load test
+        run: |
+          set -euo pipefail
+          # Concurrency 64 is the shape that exposed the transport bug.
+          hey -n 8000 -c 64 -t 20 http://127.0.0.1:8099/ | tee /tmp/hey.txt
+          # A grep that matches nothing exits 1, and pipefail would treat
+          # that as the job failing. So count with awk, which always exits 0,
+          # rather than filtering with grep -v.
+          ok=$(awk '/\[200\]/ {s+=$2} END {print s+0}' /tmp/hey.txt)
+          all=$(awk '/^ +\[[0-9]+\]/ {s+=$2} END {print s+0}' /tmp/hey.txt)
+          echo "200s: $ok of $all"
+          if [ "$ok" -ne "$all" ]; then
+            echo "::error::$(( all - ok )) non-200 responses under load"
+            exit 1
+          fi
+          # hey splits -n across -c by integer division, so the expected
+          # count is floor(n/c)*c, not n.
+          want=$(( (8000 / 64) * 64 ))
+          [ "$ok" -eq "$want" ] || { echo "::error::got $ok 200s, want $want"; exit 1; }
+          echo "load test clean: $ok/$want"
+
+      - name: Load test through key rotation
+        run: |
+          set -euo pipefail
+          pkill -f loadtarget || true
+          # A short lifetime and a fast rotation, so the run crosses many
+          # rotations. Tokens minted before one must still verify after it.
+          /tmp/loadtarget -listen 127.0.0.1:8098 -rotate 300ms -ttl 2s &
+          for i in $(seq 30); do
+            curl -sf http://127.0.0.1:8098/ >/dev/null && break
+            sleep 1
+          done
+          hey -n 6000 -c 32 -t 20 http://127.0.0.1:8098/ | tee /tmp/hey-rot.txt
+          ok=$(awk '/\[200\]/ {s+=$2} END {print s+0}' /tmp/hey-rot.txt)
+          all=$(awk '/^ +\[[0-9]+\]/ {s+=$2} END {print s+0}' /tmp/hey-rot.txt)
+          echo "200s across rotation: $ok of $all"
+          if [ "$ok" -ne "$all" ]; then
+            echo "::error::$(( all - ok )) non-200 responses across key rotation"
+            exit 1
+          fi
+          echo "rotation under load clean"
+
+      - name: Publish the numbers
+        if: always()
+        run: |
+          { echo '## Load test'; echo; echo '```';
+            grep -E 'Requests/sec|Average|Slowest|^ +\[' /tmp/hey.txt || true;
+            echo '```'; } >> "$GITHUB_STEP_SUMMARY"
