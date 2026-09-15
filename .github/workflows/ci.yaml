@@ -56,3 +56,50 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks detect --source . --config .gitleaks.toml --redact --verbose
+
+  # Performance is a correctness property here: the hot path runs a signature
+  # per request on the way in and another on the way out, so a regression is
+  # paid by every caller. Compare against the base branch and fail on a large
+  # slowdown rather than waiting for someone to notice in production.
+  bench:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.25'}
+
+      - name: Benchmark this branch
+        run: go test -run '^$' -bench . -benchmem -count 6 ./... | tee /tmp/new.txt
+
+      - name: Benchmark the base branch
+        run: |
+          git stash push --include-untracked --quiet || true
+          git checkout --quiet ${{ github.event.pull_request.base.sha }}
+          go test -run '^$' -bench . -benchmem -count 6 ./... | tee /tmp/old.txt
+          git checkout --quiet -
+
+      - name: Compare
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@latest
+          benchstat /tmp/old.txt /tmp/new.txt | tee /tmp/stat.txt
+
+      - name: Fail on a large regression
+        run: |
+          # benchstat prints a percentage per row when the change is
+          # statistically significant. Anything slower than +20% is treated as
+          # a regression; smaller moves are noise on a shared runner.
+          if grep -oE '\+[0-9]+\.[0-9]+%' /tmp/stat.txt | tr -d '+%' \
+             | awk '$1 > 20 { found=1 } END { exit !found }'; then
+            echo "::error::a benchmark regressed by more than 20%"
+            cat /tmp/stat.txt
+            exit 1
+          fi
+          echo "no significant regression"
+
+      - name: Publish the comparison
+        if: always()
+        run: |
+          { echo '## Benchmarks'; echo; echo '```'; cat /tmp/stat.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"

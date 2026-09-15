@@ -181,15 +181,35 @@ name can be reassigned.
 * **Revocation is expiry.** There is no deny list. The lifetime cap is the
   control, which is why it is short and enforced on both sides.
 
+## Many backends
+
+One signer can front many backends. A route picks the backend **and the
+audience**, together, because a token minted for one backend must not work at
+another:
+
+```go
+router, _ := proxy.NewRouter(
+    proxy.Route{Name: "grafana", Hostnames: []string{"grafana.example.ts.net"},
+        Upstream: grafanaURL, Audience: "grafana"},
+    proxy.Route{Name: "api-v2", Hostnames: []string{"app.example.ts.net"},
+        PathPrefix: "/api/v2", Upstream: apiURL, Audience: "api"},
+)
+px, _ := proxy.New(proxy.Config{Router: router, Signer: sg})
+```
+
+Matching follows Gateway API: the most specific hostname wins, then the
+longest path prefix, then declaration order. A request that matches no route
+gets `404` and **no token is minted**, because there is no audience to mint
+one for.
+
+`Route.Tenant` pins a route to one tenant regardless of what the caller asks
+for.
+
 ## What this is not
 
-**It is not an Ingress controller or a Gateway API implementation.** There is
-no controller, no `GatewayClass`, nothing watching cluster resources. `tsjwtd`
-is a process you configure with flags, and it forwards to **one** upstream.
-
-Putting a second service behind it today means running a second instance. That
-is the honest state of adoption, and the shape that would fix it is a gateway
-in front of many backends — see
+**It is not yet a Gateway API implementation.** There is no controller and no
+`GatewayClass`; routes are configured in code or by flags, not read from
+`HTTPRoute` resources. That is the plan for v1.0 — see
 [ARCHITECTURE.md](ARCHITECTURE.md#a-gateway-in-front-of-many-backends).
 
 ## Status
