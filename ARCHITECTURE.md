@@ -110,6 +110,30 @@ configuration breaks this rule.
 A `kid` is the RFC 7638 thumbprint of the key. The key defines the `kid`, so
 you cannot use one `kid` for two keys.
 
+## The credential, and why it is minted rather than held
+
+The signer is a node on the private network, so it needs a credential to join
+one. Holding a static key is the obvious approach and the wrong one.
+
+A key expires. A tagged node does not expire its node key, so the service goes
+on running long past that date, and the failure appears only at the next
+restart — often months later, during something unrelated.
+
+So the signer holds a credential that **mints** keys rather than a key. It
+mints one at startup, which makes the key in use never older than the process.
+The minting credential cannot join a node by itself and is revocable in one
+place.
+
+That leaves one question: what replaces a process before its key dies? The
+health check does. It reports unhealthy at `expiry - (buffer + splay)`, so an
+orchestrator replaces the process while the current key still works, and the
+replacement mints a fresh one. Expiry becomes a scheduled restart instead of
+an outage.
+
+The splay matters as soon as there is more than one replica. Replicas that
+start together hold keys that expire together, so without a per-process offset
+they would all report unhealthy in the same minute and stop as one.
+
 ## More than one replica
 
 A replica makes its signing key at start and keeps it in memory. Two replicas
