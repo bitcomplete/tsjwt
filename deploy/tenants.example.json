@@ -1,20 +1,20 @@
 {
   "tenants": [
     {
-      "id": "bitcomplete",
-      "name": "Bit Complete",
+      "id": "acme",
+      "name": "Acme Corp",
       "default": true,
       "groups": {
-        "group:k8s-admin": "admin",
-        "group:grafana-editor": "editor"
+        "group:acme-admin": "admin",
+        "group:acme-eng": "editor"
       }
     },
     {
-      "id": "hiringloop",
-      "name": "Hiring Loop",
+      "id": "globex",
+      "name": "Globex",
       "groups": {
-        "group:hiringloop-admin": "admin",
-        "group:hiringloop-user": "member"
+        "group:globex-admin": "admin",
+        "group:globex-user": "member"
       }
     }
   ],

@@ -57,7 +57,7 @@ We measured a live tailnet on 2026-09-15. For a tagged node, `WhoIs` does
 not return an empty user. It returns a complete user:
 
 ```json
-{"ID": 1234567890123456,
+{"ID": <a stable numeric id>,
  "LoginName": "tagged-devices",
  "DisplayName": "Tagged Devices"}
 ```

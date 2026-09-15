@@ -33,7 +33,7 @@ import (
 // caller in no group, which resolves to no tenant, which is a refusal. That
 // fails closed, but it fails silently, and it looks like a bug in the
 // resolver rather than a missing line in the policy file.
-const CapGroups = tailcfg.PeerCapability("example.com/cap/tsjwt")
+const CapGroups = tailcfg.PeerCapability("tsjwt.dev/cap/groups")
 
 // capRule is the shape this package expects inside the capability grant.
 // Anything else in the grant is ignored.
@@ -95,7 +95,7 @@ func (s *Source) Identify(remoteAddr string) (tsjwt.Identity, error) {
 	// node does NOT return an empty user. It returns a complete,
 	// real-looking profile:
 	//
-	//	{"ID":1234567890123456,
+	//	{"ID":<a stable numeric id>,
 	//	 "LoginName":"tagged-devices",
 	//	 "DisplayName":"Tagged Devices"}
 	//
