@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,6 +55,8 @@ func run() error {
 		allowTags = flag.Bool("allow-tagged", false, "issue tokens to tagged nodes as well as people")
 		jwksLocal = flag.String("jwks-listen", "", "also serve ONLY the key set on this ordinary address, for in-cluster verifiers")
 		capName   = flag.String("cap", string(tsnetid.CapGroups), "tailnet capability that carries the caller's groups")
+		plaintext = flag.Bool("plaintext", false, "serve HTTP instead of HTTPS on -listen; for a tailnet with no certificates")
+		redirect  = flag.String("redirect-listen", "", "serve permanent redirects to HTTPS on this address, conventionally :80")
 	)
 	flag.Parse()
 
@@ -149,8 +152,28 @@ func run() error {
 	// Everything else is the proxied backend.
 	mux.Handle("/", px)
 
-	ln, err := ts.Listen("tcp", *listen)
+	// Serve TLS by default.
+	//
+	// The traffic is already inside WireGuard, so this is not what keeps it
+	// confidential. It is about the token. An assertion is a bearer
+	// credential in a header, and a plain listener means every client has to
+	// be told to send one over http://, which is a habit that does not stay
+	// inside the tailnet. It also makes the service reachable at the URL its
+	// own issuer claim names, rather than at that URL plus a port.
+	//
+	// ListenTLS gets a certificate for the node's MagicDNS name, which needs
+	// HTTPS certificates enabled for the tailnet.
+	var ln net.Listener
+	if *plaintext {
+		ln, err = ts.Listen("tcp", *listen)
+	} else {
+		ln, err = ts.ListenTLS("tcp", *listen)
+	}
 	if err != nil {
+		if !*plaintext {
+			return fmt.Errorf("listen TLS on %s: %w (if this tailnet has no "+
+				"HTTPS certificates, enable them, or run with -plaintext)", *listen, err)
+		}
 		return fmt.Errorf("listen %s: %w", *listen, err)
 	}
 	srv := &http.Server{
@@ -159,6 +182,37 @@ func run() error {
 	}
 
 	go rotateLoop(ctx, keySet, *rotate)
+
+	// A plain listener whose only job is to send callers to the TLS one, so
+	// that a request to http:// does not silently succeed and teach the
+	// wrong habit.
+	if *redirect != "" && !*plaintext {
+		rln, err := ts.Listen("tcp", *redirect)
+		if err != nil {
+			return fmt.Errorf("listen %s for redirects: %w", *redirect, err)
+		}
+		rs := &http.Server{
+			ReadHeaderTimeout: 10 * time.Second,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				u := *r.URL
+				u.Scheme = "https"
+				u.Host = strings.TrimSuffix(status.Self.DNSName, ".")
+				http.Redirect(w, r, u.String(), http.StatusPermanentRedirect)
+			}),
+		}
+		go func() {
+			slog.Info("serving redirects to https", "listen", *redirect)
+			if err := rs.Serve(rln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("redirect listener", "err", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = rs.Shutdown(sctx)
+		}()
+	}
 
 	// A backend has to fetch the key set, and it is not on the tailnet:
 	// it sits behind this process. The tailnet listener cannot serve it,
@@ -197,7 +251,11 @@ func run() error {
 		_ = srv.Shutdown(sctx)
 	}()
 
-	slog.Info("serving", "listen", *listen, "upstream", up.String(),
+	scheme := "https"
+	if *plaintext {
+		scheme = "http"
+	}
+	slog.Info("serving", "listen", *listen, "scheme", scheme, "upstream", up.String(),
 		"audience", *audience, "issuer", *issuer, "ttl", ttl.String())
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
