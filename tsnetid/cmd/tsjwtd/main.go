@@ -9,7 +9,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -92,7 +91,7 @@ func run() error {
 		return fmt.Errorf("parse -upstream: %w", err)
 	}
 
-	policy, err := loadPolicy(*tenantCfg)
+	policy, err := tsjwt.LoadPolicyFile(*tenantCfg)
 	if err != nil {
 		return err
 	}
@@ -400,87 +399,4 @@ func tenantFromRequest(r *http.Request) string {
 		return t
 	}
 	return r.URL.Query().Get("tenant")
-}
-
-// policyFile is the on-disk tenant policy. It keeps the org model out of the
-// binary, so a deployment changes tenancy by changing a file.
-type policyFile struct {
-	// Tenants are every tenant known to this deployment.
-	Tenants []policyTenant `json:"tenants"`
-	// DefaultRole is granted inside a tenant to an identity that matches
-	// the tenant but no role rule. Empty means no access.
-	DefaultRole string `json:"defaultRole,omitempty"`
-}
-
-type policyTenant struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
-	// Groups maps a tailnet group to a role inside this tenant.
-	Groups map[string]string `json:"groups"`
-	// Default marks this tenant as the one used when a caller names none.
-	Default bool `json:"default,omitempty"`
-}
-
-// loadPolicy reads the policy file and returns it as a TenantResolver.
-func loadPolicy(path string) (tsjwt.TenantResolver, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read tenant policy: %w", err)
-	}
-	var p policyFile
-	dec := json.NewDecoder(strings.NewReader(string(b)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&p); err != nil {
-		return nil, fmt.Errorf("parse tenant policy %s: %w", path, err)
-	}
-	if len(p.Tenants) == 0 {
-		return nil, fmt.Errorf("tenant policy %s names no tenants", path)
-	}
-	var defaultID string
-	for _, t := range p.Tenants {
-		if (tsjwt.Tenant{ID: t.ID}).Valid() != nil {
-			return nil, fmt.Errorf("tenant policy: %q is not a valid tenant id", t.ID)
-		}
-		if t.Default {
-			if defaultID != "" {
-				return nil, fmt.Errorf("tenant policy: %q and %q are both default", defaultID, t.ID)
-			}
-			defaultID = t.ID
-		}
-	}
-
-	return tsjwt.TenantResolverFunc(func(id tsjwt.Identity) (tsjwt.Grant, error) {
-		g := tsjwt.Grant{}
-		for _, t := range p.Tenants {
-			var roles []string
-			seen := map[string]struct{}{}
-			for _, grp := range id.Groups {
-				role, ok := t.Groups[grp]
-				if !ok {
-					continue
-				}
-				if _, dup := seen[role]; dup {
-					continue
-				}
-				seen[role] = struct{}{}
-				roles = append(roles, role)
-			}
-			if len(roles) == 0 {
-				if p.DefaultRole == "" {
-					continue // no access to this tenant
-				}
-				roles = []string{p.DefaultRole}
-			}
-			g.Tenants = append(g.Tenants, tsjwt.Tenant{ID: t.ID, Name: t.Name, Roles: roles})
-			if t.Default {
-				g.Default = t.ID
-			}
-		}
-		// When the caller reaches exactly one tenant, that is the
-		// default, whatever the file says.
-		if g.Default == "" && len(g.Tenants) == 1 {
-			g.Default = g.Tenants[0].ID
-		}
-		return g, nil
-	}), nil
 }

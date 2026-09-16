@@ -228,3 +228,6 @@ func newTransport(maxIdlePerHost int) http.RoundTripper {
 		ForceAttemptHTTP2:     true,
 	}
 }
+
+// Router returns the route table this proxy serves.
+func (p *Proxy) Router() *Router { return p.router }
