@@ -20,24 +20,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/bitcomplete/tsjwt"
-	"github.com/bitcomplete/tsjwt/gateway"
 	"github.com/bitcomplete/tsjwt/k8sstore"
 	"github.com/bitcomplete/tsjwt/keys"
 	"github.com/bitcomplete/tsjwt/proxy"
+	"github.com/bitcomplete/tsjwt/routetable"
 	"github.com/bitcomplete/tsjwt/signer"
 	"github.com/bitcomplete/tsjwt/tsnetid"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
-	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
-	gwapi "sigs.k8s.io/gateway-api/apis/v1"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
@@ -51,7 +46,9 @@ func main() {
 
 func run() error {
 	var (
-		gatewayRef = flag.String("gateway", "", "the Gateway to serve, as namespace/name (required)")
+		gatewayRef = flag.String("gateway", "", "the Gateway this serves, as namespace/name (required)")
+		routesPath = flag.String("routes", "/etc/tsjwt/routes.json", "the rendered route table, normally a mounted ConfigMap")
+		routeCache = flag.String("route-cache", "", "where to keep the last table that parsed, so a restart during an outage still has routes; defaults to <state-dir>/routes.cache.json")
 		hostname   = flag.String("hostname", "", "tailnet hostname; defaults to the Gateway name")
 		stateDir   = flag.String("state-dir", "/var/lib/tsjwt", "directory for tailnet node state")
 		issuer     = flag.String("issuer", "", "iss claim; defaults to https://<hostname>")
@@ -91,24 +88,6 @@ func run() error {
 	policy, err := tsjwt.LoadPolicyFile(*tenants)
 	if err != nil {
 		return err
-	}
-
-	// Kubernetes client. Routes come from the cluster, so this is a hard
-	// dependency at startup even though a later failure is survivable.
-	scheme := runtime.NewScheme()
-	if err := gwapi.Install(scheme); err != nil {
-		return fmt.Errorf("register gateway types: %w", err)
-	}
-	if err := corev1.AddToScheme(scheme); err != nil {
-		return fmt.Errorf("register core types: %w", err)
-	}
-	restCfg, err := ctrlconfig.GetConfig()
-	if err != nil {
-		return fmt.Errorf("kubernetes config: %w", err)
-	}
-	kc, err := ctrlclient.New(restCfg, ctrlclient.Options{Scheme: scheme})
-	if err != nil {
-		return fmt.Errorf("kubernetes client: %w", err)
 	}
 
 	keySet, err := keys.NewSet(keys.WithOverlap(*overlap))
@@ -193,10 +172,19 @@ func run() error {
 		return err
 	}
 
-	watcher := &gateway.Watcher{
-		Client:   kc,
-		Gateway:  types.NamespacedName{Namespace: ns, Name: name},
-		Interval: *resync,
+	// Routes come from a file the controller renders, not from the API.
+	//
+	// The component whose job is to keep serving should not depend on the
+	// thing most likely to be unavailable during an incident. A mounted
+	// ConfigMap keeps working through an API outage, and this process
+	// needs no RBAC at all.
+	if *routeCache == "" {
+		*routeCache = filepath.Join(*stateDir, "routes.cache.json")
+	}
+	source := &routetable.FileSource{
+		Path:      *routesPath,
+		CachePath: *routeCache,
+		Interval:  *resync,
 		OnChange: func(routes []proxy.Route) {
 			if err := dyn.Set(routes); err != nil {
 				// A refused table leaves the previous one serving,
@@ -212,7 +200,17 @@ func run() error {
 			}
 		},
 	}
-	go watcher.Run(ctx)
+	// Load the cache before the first read, so an unreadable mount at
+	// startup means stale routes rather than no routes.
+	if err := source.LoadCache(); err != nil {
+		slog.Error("could not load the cached route table", "err", err)
+	}
+	if routes := source.Routes(); len(routes) > 0 {
+		if err := dyn.Set(routes); err != nil {
+			slog.Error("the cached route table is unusable", "err", err)
+		}
+	}
+	go source.Run(ctx)
 	go rotateLoop(ctx, keySet, *rotate)
 	if published != nil {
 		go published.Run(ctx, func(err error) {
@@ -237,13 +235,21 @@ func run() error {
 		// Ready means routes have been read at least once. Serving
 		// before that would answer 503 to everything, which looks like
 		// an outage rather than a startup.
-		if watcher.Revision() == 0 {
+		if !source.Loaded() {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintln(w, "routes not read yet")
+			fmt.Fprintln(w, "no route table yet")
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "ok: %d routes at revision %d\n", len(dyn.Routes()), watcher.Revision())
+		// Say when the table came from the cache. The routes work, but
+		// they are not known to be current, and that is worth alerting
+		// on rather than discovering later.
+		stale := ""
+		if source.ServingFromCache() {
+			stale = " (from cache: the rendered table is unreadable)"
+		}
+		fmt.Fprintf(w, "ok: %d routes at revision %d%s\n",
+			len(dyn.Routes()), source.Revision(), stale)
 	})
 	opsSrv := &http.Server{Addr: *jwksListen, Handler: ops, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
