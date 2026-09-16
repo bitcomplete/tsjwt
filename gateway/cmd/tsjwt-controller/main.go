@@ -18,6 +18,7 @@ import (
 	"github.com/bitcomplete/tsjwt/gateway"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -51,7 +52,7 @@ func main() {
 
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
-		corev1.AddToScheme, appsv1.AddToScheme, gwapi.Install,
+		corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme, gwapi.Install,
 	} {
 		if err := add(scheme); err != nil {
 			log.Error(err, "registering types")

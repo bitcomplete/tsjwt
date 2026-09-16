@@ -5,6 +5,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -89,6 +90,55 @@ func Service(gw *gwapi.Gateway) *corev1.Service {
 				Name: "jwks", Port: 9100, TargetPort: intstr.FromString("jwks"),
 			}},
 		},
+	}
+}
+
+// KeysRole lets one Gateway's data planes publish their verification keys,
+// and nothing else.
+//
+// The Role is provisioned per Gateway rather than installed once because the
+// ConfigMap name depends on the Gateway. A static Role could only be written
+// by granting get and update on every ConfigMap in the namespace, which would
+// include the data plane's own route table — the one thing it must not be
+// able to rewrite.
+func KeysRole(gw *gwapi.Gateway) *rbacv1.Role {
+	n := names{gw}
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: n.keys(), Namespace: gw.Namespace, Labels: n.labels(),
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				// create cannot be name-scoped by the API, so it is
+				// granted on the resource. The name-scoped verbs below
+				// are what keep this narrow.
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"create"},
+			},
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"configmaps"},
+				ResourceNames: []string{n.keys()},
+				Verbs:         []string{"get", "update"},
+			},
+		},
+	}
+}
+
+// KeysRoleBinding binds [KeysRole] to the data plane's account.
+func KeysRoleBinding(gw *gwapi.Gateway, serviceAccount string) *rbacv1.RoleBinding {
+	n := names{gw}
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: n.keys(), Namespace: gw.Namespace, Labels: n.labels(),
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName, Kind: "Role", Name: n.keys(),
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind: "ServiceAccount", Name: serviceAccount, Namespace: gw.Namespace,
+		}},
 	}
 }
 
