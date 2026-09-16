@@ -43,6 +43,9 @@ rules:
   # It provisions a narrow Role for each data plane. Kubernetes requires a
   # grantor to hold every permission it grants, which is why the controller
   # holds the ConfigMap verbs above.
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [roles, rolebindings]
     verbs: [get, list, watch, create, update, patch, delete]
@@ -68,14 +71,14 @@ subjects:
     name: tsjwt-controller
     namespace: tsjwt-system
 ---
-# The data plane's account. It needs no access to routes: those arrive in a
-# mounted ConfigMap, which the kubelet delivers. The only thing it needs the
-# API for is publishing its verification keys so that replicas can verify each
-# other's tokens.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: tsjwt-dataplane
+# The data plane's ServiceAccount, Role and RoleBinding are all provisioned
+# per Gateway by the controller, not installed here. A Gateway may live in any
+# namespace, its data planes run beside it, and a pod can only use an account
+# in its own namespace — so there is nothing useful to install centrally.
+#
+# The data plane needs no access to routes: those arrive in a mounted
+# ConfigMap the kubelet delivers. The only thing it uses the API for is
+# publishing its verification keys, so replicas can verify each other.
 ---
 # The data plane's Role and RoleBinding are provisioned per Gateway by the
 # controller, not installed here. The ConfigMap it publishes keys to is named

@@ -6,5 +6,5 @@ resources:
   - rbac.yaml
 images:
   - name: tsjwt
-    newName: ghcr.io/bitcomplete/tsjwt
-    newTag: latest
+    newName: REPLACE_ME/tsjwt
+    newTag: gw-v0.7.1

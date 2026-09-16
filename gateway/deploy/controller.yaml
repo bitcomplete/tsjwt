@@ -11,10 +11,8 @@ metadata:
   name: tsjwt
 spec:
   controllerName: tsjwt.dev/gateway-controller
-  description: >-
-    Identity-aware gateway. Each Gateway becomes a node on the tailnet that
-    authenticates callers there and mints a short-lived signed assertion per
-    request.
+  # Gateway API caps this at 64 bytes.
+  description: Identity-aware gateway backed by a tailnet node.
 ---
 apiVersion: apps/v1
 kind: Deployment
