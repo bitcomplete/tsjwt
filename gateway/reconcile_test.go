@@ -421,3 +421,50 @@ func TestListenerHostnameBecomesTheNodeName(t *testing.T) {
 		})
 	}
 }
+
+// TestJWKSOverTLSIsPerGateway checks the annotation, and that the probes
+// follow it. The probes share the key set's port, so a Gateway that serves
+// TLS without moving them leaves the kubelet speaking HTTP to an HTTPS
+// listener and the pod restarting.
+func TestJWKSOverTLSIsPerGateway(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		annotation string
+		wantTLS    bool
+	}{
+		{"off by default", "", false},
+		{"on by annotation", "true", true},
+		{"anything else is off", "yes", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gatewayWithClass("edge", "infra", "tsjwt")
+			if tc.annotation != "" {
+				g.Annotations = map[string]string{gateway.JWKSOverTLSAnnotation: tc.annotation}
+			}
+			sts, err := gateway.StatefulSet(g, gateway.Config{
+				Image: "img", CredentialSecret: "creds", Tag: "tag:example",
+			}, "tenants")
+			if err != nil {
+				t.Fatalf("statefulset: %v", err)
+			}
+			c := sts.Spec.Template.Spec.Containers[0]
+			hasFlag := false
+			for _, a := range c.Args {
+				if a == "-jwks-tls" {
+					hasFlag = true
+				}
+			}
+			if hasFlag != tc.wantTLS {
+				t.Fatalf("-jwks-tls present = %v, want %v", hasFlag, tc.wantTLS)
+			}
+			want := corev1.URISchemeHTTP
+			if tc.wantTLS {
+				want = corev1.URISchemeHTTPS
+			}
+			if got := c.ReadinessProbe.HTTPGet.Scheme; got != want {
+				t.Fatalf("probe scheme = %q, want %q", got, want)
+			}
+		})
+	}
+}
