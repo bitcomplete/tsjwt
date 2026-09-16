@@ -32,7 +32,6 @@ func main() {
 		image      = flag.String("dataplane-image", "", "image for provisioned data planes (required)")
 		secret     = flag.String("credential-secret", "tsjwt-credentials", "Secret holding the tailnet OAuth client")
 		tag        = flag.String("tag", "", "tailnet tag for minted auth keys (required)")
-		sa         = flag.String("dataplane-service-account", "tsjwt-dataplane", "ServiceAccount for data planes")
 		tenants    = flag.String("tenants-configmap", "tsjwt-tenants", "ConfigMap holding the tenant policy")
 		storage    = flag.String("storage-class", "", "storage class for data plane volumes")
 		zone       = flag.String("zone", "", "pin data planes to one zone")
@@ -82,7 +81,6 @@ func main() {
 		Client: mgr.GetClient(),
 		Config: gateway.Config{
 			Image:            *image,
-			ServiceAccount:   *sa,
 			CredentialSecret: *secret,
 			Tag:              *tag,
 			StorageClass:     *storage,
