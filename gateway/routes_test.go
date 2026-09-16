@@ -1,6 +1,7 @@
 package gateway_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bitcomplete/tsjwt/gateway"
@@ -240,5 +241,37 @@ func TestPathPrefixes(t *testing.T) {
 	got, errs = gateway.Translate(g, []gwapi.HTTPRoute{exact}, services)
 	if len(got) != 0 || len(errs) == 0 {
 		t.Fatalf("an exact path match must be refused, not widened to a prefix; got %v / %v", got, errs)
+	}
+}
+
+// TestFiltersAreRefusedNotIgnored covers a route asking for behaviour this
+// implementation does not have.
+//
+// Ignoring a filter is the worst outcome available: the route is accepted,
+// the status says so, and it serves something other than what was asked for.
+// Refusing it says which filter and why.
+func TestFiltersAreRefusedNotIgnored(t *testing.T) {
+	t.Parallel()
+	g := gw("edge", "infra")
+	services := []corev1.Service{svc("app", "infra", 80)}
+
+	r := route("rewrite", "infra", "edge", nil, rule("app", 80, "/api"))
+	r.Spec.Rules[0].Filters = []gwapi.HTTPRouteFilter{{
+		Type: gwapi.HTTPRouteFilterURLRewrite,
+		URLRewrite: &gwapi.HTTPURLRewriteFilter{
+			Path: &gwapi.HTTPPathModifier{
+				Type:               gwapi.PrefixMatchHTTPPathModifier,
+				ReplacePrefixMatch: ptr("/"),
+			}}}}
+
+	got, errs := gateway.Translate(g, []gwapi.HTTPRoute{r}, services)
+	if len(got) != 0 {
+		t.Fatalf("a route with an unimplemented filter must produce no route, got %d", len(got))
+	}
+	if len(errs) != 1 || errs[0].Reason != gwapi.RouteReasonUnsupportedValue {
+		t.Fatalf("want one UnsupportedValue error naming the filter, got %v", errs)
+	}
+	if !strings.Contains(errs[0].Detail, "URLRewrite") {
+		t.Fatalf("the error should name the filter that was refused: %q", errs[0].Detail)
 	}
 }
