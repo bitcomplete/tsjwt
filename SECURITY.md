@@ -15,8 +15,30 @@ Tailscale tailnet, `tailscaled` accepts a packet only from a peer with an
 authenticated node key. The map from address to identity comes from the
 control plane, not from the peer.
 
-*This assumption is not yet measured.* We know what `WhoIs` returns. We have
-not tried to make a hostile peer change it. This is the one open item.
+*Measured on 2026-09-16.* We tried to change the answer. Results:
+
+| Attack | Result |
+|---|---|
+| Set `X-Forwarded-For`, `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`, or a fake assertion header to name a different tailnet address | Identity unchanged. The proxy reads `r.RemoteAddr` only. No header is consulted. |
+| Ask for the identity of an address that is not a proven peer | `WhoIs` returns *peer not found*. A forged address gives no identity, not a wrong one. |
+| Present a tagged node's full, person-looking `UserProfile` | Refused. The guard reads the tag, not the profile. |
+| Reassign a login name to move a subject | Subject follows the numeric user id, which the peer cannot choose. |
+| Claim groups without a capability grant, or under another capability name | No groups. Groups come from the named grant only. |
+
+Each case is a test in `tsnetid/whois_test.go`, built from `WhoIs` answers
+recorded off a live tailnet. Each test was mutation-checked: we broke the
+guard three ways (guard on the empty profile, delete the guard, key the
+subject on the login name) and confirmed the tests fail every time.
+
+*What remains unmeasured.* Two items, both below this library:
+
+- **Source-address spoofing at the transport.** WireGuard accepts a packet
+  for an address only if that address is in the sending peer's AllowedIPs,
+  so a forged source is dropped before `tailscaled` sees it. This is a
+  property of WireGuard, which we did not re-test here.
+- **A second human account.** The tailnet used has one human account. We
+  could not make one person's node present as another person. Impersonation
+  across *machine* principals was tested, and is refused.
 
 **The signing key stays private.** A person with the signing key can make a
 token for any identity, in any tenant. Protect the key more than any other

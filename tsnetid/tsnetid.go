@@ -21,6 +21,7 @@ import (
 
 	"github.com/bitcomplete/tsjwt"
 	"tailscale.com/client/local"
+	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
 )
 
@@ -89,6 +90,16 @@ func (s *Source) Identify(remoteAddr string) (tsjwt.Identity, error) {
 	if who == nil || who.Node == nil {
 		return zero, fmt.Errorf("%w: whois returned no node", tsjwt.ErrNoIdentity)
 	}
+	return s.identity(who)
+}
+
+// identity turns a WhoIs answer into an identity. It is separated from
+// [Source.Identify] so that the trust decision can be tested against
+// recorded WhoIs answers, including hostile ones. It must not consult
+// anything but its argument: every field it reads is asserted by the
+// control plane, never by the peer.
+func (s *Source) identity(who *apitype.WhoIsResponse) (tsjwt.Identity, error) {
+	var zero tsjwt.Identity
 	// The tag check must come first, and it must be a tag check.
 	//
 	// Measured against a live tailnet on 2026-09-15: WhoIs on a tagged
