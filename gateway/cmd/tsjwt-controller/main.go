@@ -37,6 +37,7 @@ func main() {
 		storage    = flag.String("storage-class", "", "storage class for data plane volumes")
 		zone       = flag.String("zone", "", "pin data planes to one zone")
 		capability = flag.String("capability", "", "tailnet capability carrying caller groups; must match the tailnet policy grant")
+		jwksTLS    = flag.Bool("jwks-tls", false, "data planes serve the key set over HTTPS, for verifiers that refuse plain HTTP")
 		metricsRef = flag.String("metrics-bind-address", ":8080", "metrics address")
 		probeAddr  = flag.String("health-probe-bind-address", ":8081", "health probe address")
 		leader     = flag.Bool("leader-elect", true, "run only one active controller at a time")
@@ -87,6 +88,7 @@ func main() {
 			StorageClass:     *storage,
 			Zone:             *zone,
 			Capability:       *capability,
+			JWKSOverTLS:      *jwksTLS,
 		},
 		TenantsConfigMap: *tenants,
 	}).SetupWithManager(mgr); err != nil {
