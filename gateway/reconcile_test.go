@@ -56,7 +56,6 @@ func newReconciler(t *testing.T, objs ...client.Object) (*gateway.GatewayReconci
 		Client: c,
 		Config: gateway.Config{
 			Image: "registry/tsjwt:v1", CredentialSecret: "creds", Tag: "tag:example",
-			ServiceAccount: "tsjwt-dataplane",
 		},
 		TenantsConfigMap: "tsjwt-tenants",
 	}, c
@@ -264,7 +263,7 @@ func TestDataPlaneRoleCannotRewriteItsOwnRoutes(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "infra", Name: "tsjwt-edge-keys"}, &rb); err != nil {
 		t.Fatalf("keys RoleBinding: %v", err)
 	}
-	if len(rb.Subjects) != 1 || rb.Subjects[0].Name != "tsjwt-dataplane" {
+	if len(rb.Subjects) != 1 || rb.Subjects[0].Name != "tsjwt-edge-dataplane" {
 		t.Fatalf("bound to %v, want the data plane's account", rb.Subjects)
 	}
 }
@@ -291,7 +290,7 @@ func TestProvisionedResourcesAreOwned(t *testing.T) {
 		{"tsjwt-edge", &appsv1.StatefulSet{}},
 		{"tsjwt-edge", &corev1.Service{}},
 		{"tsjwt-edge-routes", &corev1.ConfigMap{}},
-		{"tsjwt-dataplane", &corev1.ServiceAccount{}},
+		{"tsjwt-edge-dataplane", &corev1.ServiceAccount{}},
 		{"tsjwt-edge-keys", &rbacv1.Role{}},
 		{"tsjwt-edge-keys", &rbacv1.RoleBinding{}},
 	} {
@@ -340,5 +339,46 @@ func TestProbeSchemeFollowsTheKeySet(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestTwoGatewaysInOneNamespace is the case that found the shared
+// ServiceAccount. Everything a Gateway provisions is owned by it, and two
+// Gateways cannot own the same object: the second reconcile failed with
+// "already owned by another Gateway" and provisioned nothing at all.
+func TestTwoGatewaysInOneNamespace(t *testing.T) {
+	t.Parallel()
+	gc := gatewayClass("tsjwt", gateway.ControllerName)
+	a := gatewayWithClass("alpha", "infra", "tsjwt")
+	b := gatewayWithClass("beta", "infra", "tsjwt")
+
+	r, c := newReconciler(t, gc, a, b)
+	ctx := context.Background()
+	for _, name := range []string{"alpha", "beta"} {
+		if _, err := r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: "infra", Name: name}}); err != nil {
+			t.Fatalf("reconcile %s: %v", name, err)
+		}
+	}
+
+	// Each Gateway gets its own set, owned by itself.
+	for _, tc := range []struct{ gw, sa, sts string }{
+		{"alpha", "tsjwt-alpha-dataplane", "tsjwt-alpha"},
+		{"beta", "tsjwt-beta-dataplane", "tsjwt-beta"},
+	} {
+		var sa corev1.ServiceAccount
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "infra", Name: tc.sa}, &sa); err != nil {
+			t.Fatalf("%s: service account: %v", tc.gw, err)
+		}
+		if o := sa.GetOwnerReferences(); len(o) != 1 || o[0].Name != tc.gw {
+			t.Fatalf("%s: account owned by %v, want its own Gateway", tc.gw, o)
+		}
+		var sts appsv1.StatefulSet
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "infra", Name: tc.sts}, &sts); err != nil {
+			t.Fatalf("%s: statefulset: %v", tc.gw, err)
+		}
+		if got := sts.Spec.Template.Spec.ServiceAccountName; got != tc.sa {
+			t.Fatalf("%s: runs as %q, want %q", tc.gw, got, tc.sa)
+		}
 	}
 }

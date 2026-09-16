@@ -63,7 +63,14 @@ func (n names) statefulSet() string { return "tsjwt-" + n.gw.Name }
 func (n names) service() string     { return "tsjwt-" + n.gw.Name }
 func (n names) routes() string      { return "tsjwt-" + n.gw.Name + "-routes" }
 func (n names) keys() string        { return "tsjwt-" + n.gw.Name + "-keys" }
-func (n names) hostname() string    { return n.gw.Name }
+
+// serviceAccount is per Gateway, like everything else here. A shared account
+// cannot be owned by a Gateway, and two Gateways in one namespace then fight
+// over it: the second reconcile fails with "already owned by another
+// Gateway". Per-Gateway naming also keeps one Gateway's data planes from
+// holding another's permissions.
+func (n names) serviceAccount() string { return "tsjwt-" + n.gw.Name + "-dataplane" }
+func (n names) hostname() string       { return n.gw.Name }
 
 func (n names) labels() map[string]string {
 	return map[string]string{
@@ -113,11 +120,11 @@ func Service(gw *gwapi.Gateway) *corev1.Service {
 // because a Gateway may live in any namespace and its data planes run beside
 // it. Installing a single account in the controller's namespace does not
 // help: a pod can only use an account in its own.
-func DataPlaneServiceAccount(gw *gwapi.Gateway, name string) *corev1.ServiceAccount {
+func DataPlaneServiceAccount(gw *gwapi.Gateway) *corev1.ServiceAccount {
 	n := names{gw}
 	return &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name, Namespace: gw.Namespace, Labels: n.labels(),
+			Name: n.serviceAccount(), Namespace: gw.Namespace, Labels: n.labels(),
 		},
 	}
 }
@@ -156,7 +163,7 @@ func KeysRole(gw *gwapi.Gateway) *rbacv1.Role {
 }
 
 // KeysRoleBinding binds [KeysRole] to the data plane's account.
-func KeysRoleBinding(gw *gwapi.Gateway, serviceAccount string) *rbacv1.RoleBinding {
+func KeysRoleBinding(gw *gwapi.Gateway) *rbacv1.RoleBinding {
 	n := names{gw}
 	return &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -166,7 +173,7 @@ func KeysRoleBinding(gw *gwapi.Gateway, serviceAccount string) *rbacv1.RoleBindi
 			APIGroup: rbacv1.GroupName, Kind: "Role", Name: n.keys(),
 		},
 		Subjects: []rbacv1.Subject{{
-			Kind: "ServiceAccount", Name: serviceAccount, Namespace: gw.Namespace,
+			Kind: "ServiceAccount", Name: n.serviceAccount(), Namespace: gw.Namespace,
 		}},
 	}
 }
@@ -245,7 +252,7 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: n.labels()},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: cfg.ServiceAccount,
+					ServiceAccountName: n.serviceAccount(),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &nonRoot,
 						// Distroless names its user, and the kubelet

@@ -103,7 +103,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// The account the data plane runs as must exist in the Gateway's own
 	// namespace: a pod can only use an account in its own namespace, so an
 	// account installed beside the controller would not do.
-	sa := DataPlaneServiceAccount(&gw, r.Config.ServiceAccount)
+	sa := DataPlaneServiceAccount(&gw)
 	if err := r.apply(ctx, &gw, sa, func() error { return nil }); err != nil {
 		return ctrl.Result{}, fmt.Errorf("data plane ServiceAccount: %w", err)
 	}
@@ -118,9 +118,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("keys Role: %w", err)
 	}
-	rb := KeysRoleBinding(&gw, r.Config.ServiceAccount)
+	rb := KeysRoleBinding(&gw)
 	if err := r.apply(ctx, &gw, rb, func() error {
-		want := KeysRoleBinding(&gw, r.Config.ServiceAccount)
+		want := KeysRoleBinding(&gw)
 		rb.RoleRef = want.RoleRef
 		rb.Subjects = want.Subjects
 		return nil
