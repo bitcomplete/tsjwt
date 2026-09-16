@@ -40,8 +40,10 @@ type Config struct {
 	// it. Optional.
 	Zone string
 
-	// JWKSOverTLS serves the key set over HTTPS, using the data plane's
-	// own certificate. Some verifiers refuse a key set over plain HTTP.
+	// JWKSOverTLS makes every Gateway serve its key set over HTTPS. Prefer
+	// the per-Gateway annotation: whether TLS is needed depends on the
+	// consumer, and serving it where nothing needs it forces every
+	// consumer to reach the gateway by its tailnet name.
 	JWKSOverTLS bool
 
 	// Capability is the tailnet capability carrying a caller's groups.
@@ -158,6 +160,18 @@ func DataPlaneServiceAccount(gw *gwapi.Gateway) *corev1.ServiceAccount {
 	}
 }
 
+// JWKSOverTLSAnnotation makes one Gateway serve its key set over HTTPS.
+//
+// Whether TLS is needed is a property of the consumer, not of the cluster:
+// Grafana refuses a key set over plain HTTP, and a backend in the same
+// namespace is happy with the Service name. Serving TLS everywhere means
+// every consumer must reach the gateway by its tailnet name, which needs the
+// gateway's Service address pinned in the consumer's DNS — an address that
+// is not known until the Gateway exists.
+//
+// So it is per Gateway, and defaults off.
+const JWKSOverTLSAnnotation = "tsjwt.dev/jwks-tls"
+
 // KeysRole lets one Gateway's data planes publish their verification keys,
 // and nothing else.
 //
@@ -234,7 +248,7 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 	// handshake error. The kubelet does not verify the certificate, so a
 	// certificate for a name it is not using is fine.
 	probeScheme := corev1.URISchemeHTTP
-	if cfg.JWKSOverTLS {
+	if cfg.JWKSOverTLS || gw.Annotations[JWKSOverTLSAnnotation] == "true" {
 		probeScheme = corev1.URISchemeHTTPS
 	}
 
@@ -372,7 +386,7 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 	if cfg.StorageClass != "" {
 		sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName = &cfg.StorageClass
 	}
-	if cfg.JWKSOverTLS {
+	if cfg.JWKSOverTLS || gw.Annotations[JWKSOverTLSAnnotation] == "true" {
 		sts.Spec.Template.Spec.Containers[0].Args = append(
 			sts.Spec.Template.Spec.Containers[0].Args, "-jwks-tls")
 	}
