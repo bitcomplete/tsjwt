@@ -38,6 +38,16 @@ type Config struct {
 	// Zone pins data planes to one failure domain, when a cluster needs
 	// it. Optional.
 	Zone string
+
+	// Capability is the tailnet capability carrying a caller's groups.
+	// Empty uses the library default.
+	//
+	// It has to match the grant in the tailnet policy, and when it does
+	// not the failure is quiet: WhoIs returns an empty capability map,
+	// every caller resolves to no group and therefore no tenant, and the
+	// gateway answers 403 to everyone. That looks like an authorization
+	// bug rather than a name that does not match.
+	Capability string
 }
 
 // names derives the resource names for one Gateway. They are derived rather
@@ -310,6 +320,10 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 	}
 	if cfg.StorageClass != "" {
 		sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName = &cfg.StorageClass
+	}
+	if cfg.Capability != "" {
+		sts.Spec.Template.Spec.Containers[0].Args = append(
+			sts.Spec.Template.Spec.Containers[0].Args, "-cap="+cfg.Capability)
 	}
 	if cfg.Zone != "" {
 		sts.Spec.Template.Spec.NodeSelector = map[string]string{

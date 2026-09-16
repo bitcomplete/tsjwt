@@ -36,6 +36,7 @@ func main() {
 		tenants    = flag.String("tenants-configmap", "tsjwt-tenants", "ConfigMap holding the tenant policy")
 		storage    = flag.String("storage-class", "", "storage class for data plane volumes")
 		zone       = flag.String("zone", "", "pin data planes to one zone")
+		capability = flag.String("capability", "", "tailnet capability carrying caller groups; must match the tailnet policy grant")
 		metricsRef = flag.String("metrics-bind-address", ":8080", "metrics address")
 		probeAddr  = flag.String("health-probe-bind-address", ":8081", "health probe address")
 		leader     = flag.Bool("leader-elect", true, "run only one active controller at a time")
@@ -85,6 +86,7 @@ func main() {
 			Tag:              *tag,
 			StorageClass:     *storage,
 			Zone:             *zone,
+			Capability:       *capability,
 		},
 		TenantsConfigMap: *tenants,
 	}).SetupWithManager(mgr); err != nil {
