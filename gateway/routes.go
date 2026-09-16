@@ -168,6 +168,27 @@ func translateRule(r *gwapi.HTTPRoute, ri int, rule gwapi.HTTPRouteRule,
 		return nil, &RouteError{name, gwapi.RouteReasonUnsupportedValue, err.Error()}
 	}
 
+	// Filters are not implemented, and an unimplemented filter must be
+	// refused rather than ignored. A route asking for a rewrite or a header
+	// change and silently not getting it is worse than one that fails:
+	// the author sees an accepted route serving the wrong thing.
+	if len(rule.Filters) > 0 {
+		kinds := make([]string, 0, len(rule.Filters))
+		for _, f := range rule.Filters {
+			kinds = append(kinds, string(f.Type))
+		}
+		return nil, &RouteError{name, gwapi.RouteReasonUnsupportedValue,
+			fmt.Sprintf("filters are not implemented, and %v would be silently "+
+				"ignored; give the service its own Gateway instead of rewriting "+
+				"paths onto a shared one", kinds)}
+	}
+	for _, br := range rule.BackendRefs {
+		if len(br.Filters) > 0 {
+			return nil, &RouteError{name, gwapi.RouteReasonUnsupportedValue,
+				"backendRef filters are not implemented and would be silently ignored"}
+		}
+	}
+
 	prefixes := pathPrefixes(rule)
 	if len(prefixes) == 0 {
 		// Every match in the rule used a type this router cannot honour.
