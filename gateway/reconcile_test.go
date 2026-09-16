@@ -3,6 +3,7 @@ package gateway_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bitcomplete/tsjwt/gateway"
@@ -380,5 +381,43 @@ func TestTwoGatewaysInOneNamespace(t *testing.T) {
 		if got := sts.Spec.Template.Spec.ServiceAccountName; got != tc.sa {
 			t.Fatalf("%s: runs as %q, want %q", tc.gw, got, tc.sa)
 		}
+	}
+}
+
+// TestListenerHostnameBecomesTheNodeName checks that a Gateway declaring the
+// name it serves actually gets it. Without this the node is named after its
+// pod, so callers reach tsjwt-grafana-0 rather than grafana: an
+// implementation detail leaking into the URL people type.
+func TestListenerHostnameBecomesTheNodeName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		listener []string
+		wantArg  string
+	}{
+		{"declared hostname wins", []string{"grafana.example.ts.net"}, "-hostname=grafana"},
+		{"bare label works", []string{"grafana"}, "-hostname=grafana"},
+		{"a wildcard is not a name", []string{"*.example.ts.net"}, "-hostname=$(POD_NAME)"},
+		{"none declared falls back to the pod", nil, "-hostname=$(POD_NAME)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gatewayWithClass("edge", "infra", "tsjwt", tc.listener...)
+			sts, err := gateway.StatefulSet(g, gateway.Config{
+				Image: "img", CredentialSecret: "creds", Tag: "tag:example",
+			}, "tenants")
+			if err != nil {
+				t.Fatalf("statefulset: %v", err)
+			}
+			args := sts.Spec.Template.Spec.Containers[0].Args
+			found := ""
+			for _, a := range args {
+				if strings.HasPrefix(a, "-hostname=") {
+					found = a
+				}
+			}
+			if found != tc.wantArg {
+				t.Fatalf("hostname arg = %q, want %q", found, tc.wantArg)
+			}
+		})
 	}
 }
