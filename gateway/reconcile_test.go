@@ -323,7 +323,7 @@ func TestProbeSchemeFollowsTheKeySet(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := gatewayWithClass("edge", "infra", "tsjwt")
 			sts, err := gateway.StatefulSet(g, gateway.Config{
-				Image: "img", CredentialSecret: "creds", Tag: "tag:x",
+				Image: "img", CredentialSecret: "creds", Tag: "tag:example",
 				JWKSOverTLS: tc.tls,
 			}, "tenants")
 			if err != nil {

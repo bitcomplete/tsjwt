@@ -52,13 +52,18 @@ spec:
             # rewrites `image:` fields and not args, so an image name here
             # reaches the data plane verbatim and fails to pull.
             - -dataplane-image=REPLACE_ME/tsjwt:gw-v0.8.3
-            - -tag=tag:example
-            # Must match the grant in projects/tailscale_acls.json. If it
+            # The tailnet tag minted auth keys carry. It must exist in the
+            # tailnet policy, owned by whatever mints the keys.
+            - -tag=tag:REPLACE_ME
+            # Must match the capability grant in the tailnet policy. If it
             # does not, WhoIs returns no capabilities, every caller resolves
-            # to no tenant, and the gateway answers 403 to everyone.
+            # to no tenant, and the gateway answers 403 to everyone — which
+            # reads as an authorization bug rather than a name that does not
+            # match.
             - -capability=example.com/cap/tsjwt
             # Grafana refuses a key set over plain HTTP.
             - -jwks-tls
+            # Secret holding TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET.
             - -credential-secret=tsjwt-credentials
             - -tenants-configmap=tsjwt-tenants
             - -leader-elect=true
