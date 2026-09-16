@@ -304,3 +304,41 @@ func TestProvisionedResourcesAreOwned(t *testing.T) {
 		}
 	}
 }
+
+// TestProbeSchemeFollowsTheKeySet guards a mistake that is invisible in the
+// manifest and obvious only from the pod's logs. The probes share the port
+// the key set is served on, so enabling TLS there without changing them
+// leaves the kubelet speaking HTTP to an HTTPS listener: every probe fails,
+// the pod restarts, and its logs say only "client sent an HTTP request to an
+// HTTPS server".
+func TestProbeSchemeFollowsTheKeySet(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		tls  bool
+		want corev1.URIScheme
+	}{
+		{"plain", false, corev1.URISchemeHTTP},
+		{"tls", true, corev1.URISchemeHTTPS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gatewayWithClass("edge", "infra", "tsjwt")
+			sts, err := gateway.StatefulSet(g, gateway.Config{
+				Image: "img", CredentialSecret: "creds", Tag: "tag:x",
+				JWKSOverTLS: tc.tls,
+			}, "tenants")
+			if err != nil {
+				t.Fatalf("statefulset: %v", err)
+			}
+			c := sts.Spec.Template.Spec.Containers[0]
+			for _, p := range []*corev1.Probe{c.ReadinessProbe, c.LivenessProbe} {
+				if p == nil || p.HTTPGet == nil {
+					t.Fatal("missing probe")
+				}
+				if p.HTTPGet.Scheme != tc.want {
+					t.Fatalf("probe scheme = %q, want %q", p.HTTPGet.Scheme, tc.want)
+				}
+			}
+		})
+	}
+}

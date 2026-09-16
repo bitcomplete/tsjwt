@@ -191,6 +191,17 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 	n := names{gw}
 	replicas := int32(1)
 
+	// The probes share the port the key set is on, so they have to follow
+	// its scheme. Enabling TLS without this leaves the kubelet speaking
+	// HTTP to an HTTPS listener, every probe failing, and the pod
+	// restarting for a reason the pod's own logs describe only as a
+	// handshake error. The kubelet does not verify the certificate, so a
+	// certificate for a name it is not using is fine.
+	probeScheme := corev1.URISchemeHTTP
+	if cfg.JWKSOverTLS {
+		probeScheme = corev1.URISchemeHTTPS
+	}
+
 	args := []string{
 		"-gateway=" + gw.Namespace + "/" + gw.Name,
 		"-hostname=$(POD_NAME)",
@@ -263,7 +274,7 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 						// not broken, and restarting it would not help.
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-								Path: "/readyz", Port: intstr.FromString("jwks")}},
+								Path: "/readyz", Port: intstr.FromString("jwks"), Scheme: probeScheme}},
 							PeriodSeconds:    5,
 							FailureThreshold: 24,
 						},
@@ -273,7 +284,7 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 						// outage.
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-								Path: "/healthz", Port: intstr.FromString("jwks")}},
+								Path: "/healthz", Port: intstr.FromString("jwks"), Scheme: probeScheme}},
 							InitialDelaySeconds: 10,
 							PeriodSeconds:       30,
 							FailureThreshold:    4,
