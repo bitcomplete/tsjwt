@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bitcomplete/tsjwt/proxy"
+	"github.com/bitcomplete/tsjwt/routetable"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gwapi "sigs.k8s.io/gateway-api/apis/v1"
@@ -336,4 +337,11 @@ func routeStatusCondition(gen int64, accepted bool, reason gwapi.RouteConditionR
 		Reason:             string(reason),
 		Message:            msg,
 	}
+}
+
+// RenderFor renders a translated table into the form the data plane reads.
+// The controller writes this into a ConfigMap; nothing else crosses between
+// the two.
+func RenderFor(gateway string, revision int64, routes []proxy.Route) routetable.RouteFile {
+	return routetable.Render(gateway, revision, routes)
 }
