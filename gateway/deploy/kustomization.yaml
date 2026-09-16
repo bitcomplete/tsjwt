@@ -7,4 +7,4 @@ resources:
 images:
   - name: tsjwt
     newName: REPLACE_ME/tsjwt
-    newTag: gw-v0.7.1
+    newTag: gw-v0.7.2
