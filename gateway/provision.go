@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -70,7 +71,35 @@ func (n names) keys() string        { return "tsjwt-" + n.gw.Name + "-keys" }
 // Gateway". Per-Gateway naming also keeps one Gateway's data planes from
 // holding another's permissions.
 func (n names) serviceAccount() string { return "tsjwt-" + n.gw.Name + "-dataplane" }
-func (n names) hostname() string       { return n.gw.Name }
+
+// hostname is the name this Gateway answers to on the tailnet.
+//
+// A listener hostname is the Gateway API way to say "this is the name I
+// serve", so it is used when given: its first label becomes the node's name,
+// and the node is then reachable at exactly the name the Gateway declares.
+// Without one the pod name is used, which works but reads as an
+// implementation detail — tsjwt-grafana-0 rather than grafana.
+//
+// One replica only. Two data planes cannot both claim one name, so a Gateway
+// that declares a hostname and runs more than one replica would have them
+// fight over it. A single name across replicas needs a Tailscale Service,
+// which is the unsolved half of running more than one.
+func (n names) hostname() string {
+	for _, l := range n.gw.Spec.Listeners {
+		if l.Hostname == nil || *l.Hostname == "" {
+			continue
+		}
+		h := string(*l.Hostname)
+		if strings.HasPrefix(h, "*.") {
+			continue // a wildcard is not a name this node can take
+		}
+		if label, _, ok := strings.Cut(h, "."); ok && label != "" {
+			return label
+		}
+		return h
+	}
+	return n.gw.Name
+}
 
 func (n names) labels() map[string]string {
 	return map[string]string{
@@ -211,7 +240,7 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 
 	args := []string{
 		"-gateway=" + gw.Namespace + "/" + gw.Name,
-		"-hostname=$(POD_NAME)",
+		hostnameArg(gw),
 		"-routes=/etc/tsjwt/routes.json",
 		"-state-dir=/var/lib/tsjwt",
 		"-tenants=/etc/tsjwt-tenants/tenants.json",
@@ -357,6 +386,16 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 		}
 	}
 	return sts, nil
+}
+
+// hostnameArg gives the data plane its tailnet name. A Gateway that declares
+// a listener hostname gets that name; otherwise the pod's, which is stable
+// because this is a StatefulSet.
+func hostnameArg(gw *gwapi.Gateway) string {
+	if h := (names{gw}).hostname(); h != gw.Name {
+		return "-hostname=" + h
+	}
+	return "-hostname=$(POD_NAME)"
 }
 
 func boolPtr(b bool) *bool { return &b }
