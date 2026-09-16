@@ -18,11 +18,17 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bitcomplete/tsjwt"
+	"github.com/bitcomplete/tsjwt/jwt"
 	"github.com/bitcomplete/tsjwt/verifier"
 )
+
+// assertionHeader is where the proxy put the token, so the handler can show
+// the JOSE header from it.
+var assertionHeader = tsjwt.DefaultHeader
 
 func main() {
 	var (
@@ -64,6 +70,7 @@ func main() {
 	})
 	// /whoami is deliberately behind the verifier: an unauthenticated
 	// caller must not learn anything from it.
+	assertionHeader = *header
 	mux.Handle("/whoami", v.Middleware(*header, http.HandlerFunc(whoami)))
 	mux.Handle("/", v.Middleware(*header, http.HandlerFunc(whoami)))
 
@@ -79,30 +86,77 @@ func main() {
 	}
 }
 
-// whoami reports what the verified token said about the caller. It reads
-// only from the context, never from a header, so it cannot be spoofed.
+// whoami reports everything the verified token said, and how the request
+// reached here.
+//
+// It exists to be looked at. Someone putting a service behind this for the
+// first time wants to see the assertion, not be told it worked, so this shows
+// the JOSE header, every claim including any the deployment added, and the
+// routing that produced this audience.
 func whoami(w http.ResponseWriter, r *http.Request) {
 	claims, ok := tsjwt.ClaimsFrom(r.Context())
 	if !ok {
-		// Unreachable behind the middleware, but a handler that
-		// assumes its middleware ran is a handler waiting to be
-		// mounted somewhere else.
+		// Unreachable behind the middleware, but a handler that assumes
+		// its middleware ran is a handler waiting to be mounted
+		// somewhere else.
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+
+	out := map[string]any{
+		"identity": map[string]any{
+			"subject": claims.Subject,
+			"email":   claims.Email,
+			"name":    claims.Name,
+			"node":    claims.Node,
+		},
+		"authorization": map[string]any{
+			"tenant":  claims.Tenant,
+			"tenants": claims.Tenants,
+			"roles":   claims.Roles,
+			"groups":  claims.Groups,
+		},
+		"token": map[string]any{
+			"issuer":    claims.Issuer,
+			"audience":  claims.Audience,
+			"id":        claims.ID,
+			"issuedAt":  time.Unix(claims.IssuedAt, 0).UTC().Format(time.RFC3339),
+			"notBefore": time.Unix(claims.NotBefore, 0).UTC().Format(time.RFC3339),
+			"expiresAt": claims.ExpiresAt().UTC().Format(time.RFC3339),
+			"validFor":  time.Until(claims.ExpiresAt()).Round(time.Second).String(),
+		},
+		"request": map[string]any{
+			"host":   r.Host,
+			"path":   r.URL.Path,
+			"method": r.Method,
+			"proto":  r.Proto,
+		},
+	}
+
+	// The JOSE header says which key signed this and with what. Showing it
+	// makes key rotation visible: the kid changes and nothing else does.
+	if raw := bearerToken(r.Header.Get(assertionHeader)); raw != "" {
+		if hdr, _, err := jwt.Parse(raw); err == nil {
+			out["signature"] = map[string]any{
+				"alg": hdr.Alg, "typ": hdr.Typ, "kid": hdr.Kid,
+			}
+		}
+	}
+	if len(claims.Extra) > 0 {
+		out["extra"] = claims.Extra
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"subject":   claims.Subject,
-		"email":     claims.Email,
-		"name":      claims.Name,
-		"node":      claims.Node,
-		"tenant":    claims.Tenant,
-		"tenants":   claims.Tenants,
-		"roles":     claims.Roles,
-		"groups":    claims.Groups,
-		"issuer":    claims.Issuer,
-		"audience":  claims.Audience,
-		"expiresAt": claims.ExpiresAt().UTC().Format(time.RFC3339),
-		"tokenId":   claims.ID,
-	})
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(out)
+}
+
+// bearerToken accepts either a bare token or one behind a Bearer prefix, so
+// this works behind a proxy that writes either.
+func bearerToken(v string) string {
+	if rest, ok := strings.CutPrefix(v, "Bearer "); ok {
+		return rest
+	}
+	return v
 }
