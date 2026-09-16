@@ -23,10 +23,15 @@ jobs:
           fi
 
       - name: vet
-        run: go vet ./... && (cd tsnetid && go vet ./...)
+        run: |
+          go vet ./...
+          (cd tsnetid && go vet ./...)
+          (cd gateway && go vet ./...)
 
       - name: test
-        run: go test -race ./...
+        run: |
+          go test -race ./...
+          (cd gateway && go test -race ./...)
 
       # The core must never grow a dependency. A backend that only verifies
       # tokens takes on nothing, and that is a property worth enforcing
