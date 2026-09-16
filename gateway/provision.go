@@ -39,6 +39,10 @@ type Config struct {
 	// it. Optional.
 	Zone string
 
+	// JWKSOverTLS serves the key set over HTTPS, using the data plane's
+	// own certificate. Some verifiers refuse a key set over plain HTTP.
+	JWKSOverTLS bool
+
 	// Capability is the tailnet capability carrying a caller's groups.
 	// Empty uses the library default.
 	//
@@ -320,6 +324,10 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 	}
 	if cfg.StorageClass != "" {
 		sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName = &cfg.StorageClass
+	}
+	if cfg.JWKSOverTLS {
+		sts.Spec.Template.Spec.Containers[0].Args = append(
+			sts.Spec.Template.Spec.Containers[0].Args, "-jwks-tls")
 	}
 	if cfg.Capability != "" {
 		sts.Spec.Template.Spec.Containers[0].Args = append(

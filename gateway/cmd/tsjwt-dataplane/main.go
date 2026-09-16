@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -65,6 +66,7 @@ func run() error {
 		keyTags    = flag.String("key-tags", "", "comma-separated tags for an auth key minted at startup")
 		shareCM    = flag.String("share-keys", "", "publish verification keys to this ConfigMap")
 		plaintext  = flag.Bool("plaintext", false, "serve HTTP instead of HTTPS")
+		jwksTLS    = flag.Bool("jwks-tls", false, "serve the key set over HTTPS, using this node's own certificate")
 	)
 	flag.Parse()
 
@@ -252,9 +254,43 @@ func run() error {
 			len(dyn.Routes()), source.Revision(), stale)
 	})
 	opsSrv := &http.Server{Addr: *jwksListen, Handler: ops, ReadHeaderTimeout: 10 * time.Second}
+	if *jwksTLS {
+		// Some verifiers refuse a key set over plain HTTP, reasonably:
+		// Grafana is one, and says so rather than failing quietly.
+		//
+		// The certificate is this node's own, for its name on the
+		// private network, issued by a public CA. A verifier that
+		// resolves that name to this Service therefore validates
+		// normally, with no private CA to distribute.
+		opsSrv.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			GetCertificate: func(hi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				name := strings.TrimSuffix(status.Self.DNSName, ".")
+				cert, key, err := lc.CertPair(hi.Context(), name)
+				if err != nil {
+					return nil, fmt.Errorf("certificate for %s: %w", name, err)
+				}
+				pair, err := tls.X509KeyPair(cert, key)
+				if err != nil {
+					return nil, err
+				}
+				return &pair, nil
+			},
+		}
+	}
 	go func() {
-		slog.Info("serving health and key set", "listen", *jwksListen)
-		if err := opsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		scheme := "http"
+		if *jwksTLS {
+			scheme = "https"
+		}
+		slog.Info("serving health and key set", "listen", *jwksListen, "scheme", scheme)
+		var err error
+		if *jwksTLS {
+			err = opsSrv.ListenAndServeTLS("", "")
+		} else {
+			err = opsSrv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("ops listener", "err", err)
 		}
 	}()

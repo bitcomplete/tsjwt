@@ -57,6 +57,8 @@ spec:
             # does not, WhoIs returns no capabilities, every caller resolves
             # to no tenant, and the gateway answers 403 to everyone.
             - -capability=example.com/cap/tsjwt
+            # Grafana refuses a key set over plain HTTP.
+            - -jwks-tls
             - -credential-secret=tsjwt-credentials
             - -dataplane-service-account=tsjwt-dataplane
             - -tenants-configmap=tsjwt-tenants
