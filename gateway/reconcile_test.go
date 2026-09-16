@@ -291,6 +291,7 @@ func TestProvisionedResourcesAreOwned(t *testing.T) {
 		{"tsjwt-edge", &appsv1.StatefulSet{}},
 		{"tsjwt-edge", &corev1.Service{}},
 		{"tsjwt-edge-routes", &corev1.ConfigMap{}},
+		{"tsjwt-dataplane", &corev1.ServiceAccount{}},
 		{"tsjwt-edge-keys", &rbacv1.Role{}},
 		{"tsjwt-edge-keys", &rbacv1.RoleBinding{}},
 	} {

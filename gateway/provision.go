@@ -93,6 +93,21 @@ func Service(gw *gwapi.Gateway) *corev1.Service {
 	}
 }
 
+// DataPlaneServiceAccount is the account a Gateway's data planes run as.
+//
+// It is provisioned per Gateway namespace rather than installed once,
+// because a Gateway may live in any namespace and its data planes run beside
+// it. Installing a single account in the controller's namespace does not
+// help: a pod can only use an account in its own.
+func DataPlaneServiceAccount(gw *gwapi.Gateway, name string) *corev1.ServiceAccount {
+	n := names{gw}
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: gw.Namespace, Labels: n.labels(),
+		},
+	}
+}
+
 // KeysRole lets one Gateway's data planes publish their verification keys,
 // and nothing else.
 //

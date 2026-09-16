@@ -100,6 +100,14 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("routes ConfigMap: %w", err)
 	}
 
+	// The account the data plane runs as must exist in the Gateway's own
+	// namespace: a pod can only use an account in its own namespace, so an
+	// account installed beside the controller would not do.
+	sa := DataPlaneServiceAccount(&gw, r.Config.ServiceAccount)
+	if err := r.apply(ctx, &gw, sa, func() error { return nil }); err != nil {
+		return ctrl.Result{}, fmt.Errorf("data plane ServiceAccount: %w", err)
+	}
+
 	// The data plane publishes its verification keys, so it needs a Role
 	// naming exactly that ConfigMap. Provisioned per Gateway because the
 	// name depends on the Gateway.
@@ -272,6 +280,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
 		Watches(&gwapi.HTTPRoute{}, routeToGateways).
