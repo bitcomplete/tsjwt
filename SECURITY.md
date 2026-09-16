@@ -69,6 +69,18 @@ each workload into one principal that looks like a person.
 The test must be on the tag. The test must run before the code reads the
 user.
 
+**A gateway derives the audience from the backend.** Two services behind one
+gateway cannot share an audience, so a token minted for one is refused by the
+other. Nobody has to choose a name for this to hold, which is why it holds.
+
+**Claim headers are a migration path, not a destination.** A route can write
+verified claims into request headers, so a backend that already trusts an
+identity header works behind the gateway unchanged. Read it as what it is: a
+backend reading that header still trusts its network position, and only
+verifying the assertion removes that. The gateway strips the union of every
+claim header any route writes, before routing, so a caller cannot supply one
+that a different route sets.
+
 **Replicas share public keys, never the private one.** Each replica makes its
 own signing key and keeps it in memory. Only public keys go to the shared
 store, so read access to that store gives an attacker nothing. Write access is

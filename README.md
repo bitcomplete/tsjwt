@@ -205,12 +205,80 @@ one for.
 `Route.Tenant` pins a route to one tenant regardless of what the caller asks
 for.
 
-## What this is not
+## Kubernetes: Gateway API
 
-**It is not yet a Gateway API implementation.** There is no controller and no
-`GatewayClass`; routes are configured in code or by flags, not read from
-`HTTPRoute` resources. That is the plan for v1.0 — see
-[ARCHITECTURE.md](ARCHITECTURE.md#a-gateway-in-front-of-many-backends).
+tsjwt implements Gateway API, so adopting it is an `HTTPRoute` rather than a
+deployment.
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: {name: edge}
+spec:
+  gatewayClassName: tsjwt
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        # The certificate comes from the private network, for the node's own
+        # name, so there is no Secret to reference.
+        options: {tsjwt.dev/certificate: tailnet}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: app}
+spec:
+  parentRefs: [{name: edge}]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /}}]
+      backendRefs: [{name: app, port: 8080}]
+```
+
+The controller provisions a data plane per Gateway, renders the attached
+routes into a ConfigMap, and reports status. The **audience is derived from
+the backend Service** as `<service>.<namespace>`, so two services behind one
+Gateway can never share one.
+
+Two halves, deliberately:
+
+| | Job | If it stops |
+|---|---|---|
+| `tsjwt-controller` | Decide routes, provision data planes, report status | Traffic continues. Routes are already mounted. |
+| `tsjwt-dataplane` | Terminate the connection, mint, forward | That Gateway stops serving. |
+
+The data plane has **no Kubernetes dependency at all** — routes arrive as a
+mounted file. A component whose job is to keep serving should not depend on
+the thing most likely to be unavailable during an incident. It also caches the
+last table that parsed, so a restart during an outage serves the routes it
+had rather than none.
+
+Install with `kubectl apply -k gateway/deploy`, after the
+[Gateway API CRDs](https://gateway-api.sigs.k8s.io/).
+
+### Annotations
+
+| Annotation | Effect |
+|---|---|
+| `tsjwt.dev/audience` | Override the derived audience |
+| `tsjwt.dev/tenant` | Pin the route to one tenant |
+| `tsjwt.dev/claim-headers` | Write claims into headers, e.g. `X-User=email` |
+
+`claim-headers` is a **migration path**. It lets a backend that already
+trusts an identity header move behind the gateway unchanged, with the header
+now written from an identity the gateway established itself. A backend reading
+it is still trusting its network position; a backend verifying the assertion
+is not.
+
+## Which binary
+
+| Binary | Use |
+|---|---|
+| `tsjwtd` | One service, no Kubernetes. Routes from flags. |
+| `tsjwt-dataplane` | Behind the Gateway API controller. Routes from a file. |
+| `tsjwt-controller` | The Gateway API controller. |
+| `tsjwt-echo` | Reference backend. Verifies and echoes the whole assertion. |
 
 ## Status
 
