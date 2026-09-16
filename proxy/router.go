@@ -39,6 +39,23 @@ type Route struct {
 	// the caller asks for. Empty leaves the choice to the caller, bounded
 	// by what their identity holds.
 	Tenant string
+
+	// ClaimHeaders writes verified claims into request headers, as
+	// header name to claim name.
+	//
+	// This exists so a backend that already trusts an identity header can
+	// move behind the gateway without being changed. The header now comes
+	// from an identity the gateway established itself, and the signed
+	// assertion travels beside it, so the backend can start verifying
+	// whenever it is ready.
+	//
+	// It is a migration path and should be read as one. A backend reading
+	// these headers is still trusting its network position; a backend
+	// verifying the assertion is not. Any header named here is stripped
+	// from the incoming request first, exactly like the assertion.
+	//
+	// Claim names: sub, email, name, node, tenant, roles, groups.
+	ClaimHeaders map[string]string
 }
 
 // Valid reports whether the route is usable.

@@ -76,7 +76,10 @@ type Proxy struct {
 	// One reverse proxy per upstream, keyed by its URL, built once so a
 	// request does not allocate one.
 	rps map[string]*httputil.ReverseProxy
-	log *slog.Logger
+	// The union of every claim header any route writes, so all of them
+	// can be stripped before routing.
+	claimHeaders map[string]struct{}
+	log          *slog.Logger
 }
 
 // New validates cfg and returns a proxy.
@@ -113,10 +116,16 @@ func New(cfg Config) (*Proxy, error) {
 		cfg.Logger = slog.Default()
 	}
 	p := &Proxy{
-		cfg:    cfg,
-		router: router,
-		rps:    make(map[string]*httputil.ReverseProxy),
-		log:    cfg.Logger,
+		cfg:          cfg,
+		router:       router,
+		rps:          make(map[string]*httputil.ReverseProxy),
+		claimHeaders: make(map[string]struct{}),
+		log:          cfg.Logger,
+	}
+	for _, rt := range router.Routes() {
+		for h := range rt.ClaimHeaders {
+			p.claimHeaders[h] = struct{}{}
+		}
 	}
 	transport := cfg.Transport
 	if transport == nil {
@@ -152,6 +161,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// order that is correct under both.
 	tsjwt.StripAssertion(r, p.cfg.Header)
 
+	// Strip every claim header any route could write, not only the ones
+	// this route writes. Otherwise a caller could supply a header that
+	// some other route sets, and reach a backend through a route that
+	// leaves it alone.
+	for h := range p.claimHeaders {
+		r.Header.Del(h)
+	}
+
 	route, ok := p.router.Match(r)
 	if !ok {
 		// No route is a routing failure, not an authorization one, and
@@ -174,6 +191,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set(p.cfg.Header, "Bearer "+tok)
 	} else {
 		r.Header.Set(p.cfg.Header, tok)
+	}
+	for header, claim := range route.ClaimHeaders {
+		if v := claimValue(claims, claim); v != "" {
+			r.Header.Set(header, v)
+		}
 	}
 	p.log.Info("assertion minted",
 		"sub", claims.Subject, "tenant", claims.Tenant,
@@ -231,3 +253,30 @@ func newTransport(maxIdlePerHost int) http.RoundTripper {
 
 // Router returns the route table this proxy serves.
 func (p *Proxy) Router() *Router { return p.router }
+
+// claimValue reads one claim by name, for ClaimHeaders.
+//
+// Only claims that are safe to flatten into a header appear here. A list is
+// joined with commas, which is what a backend reading a header expects.
+func claimValue(c tsjwt.Claims, name string) string {
+	switch name {
+	case "sub", "subject":
+		return c.Subject
+	case "email":
+		return c.Email
+	case "name":
+		return c.Name
+	case "node":
+		return c.Node
+	case "tenant":
+		return c.Tenant
+	case "roles":
+		return strings.Join(c.Roles, ",")
+	case "groups":
+		return strings.Join(c.Groups, ",")
+	case "tenants":
+		return strings.Join(c.Tenants, ",")
+	default:
+		return ""
+	}
+}

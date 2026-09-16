@@ -28,6 +28,20 @@ const AudienceAnnotation = "tsjwt.dev/audience"
 // caller asks for.
 const TenantAnnotation = "tsjwt.dev/tenant"
 
+// ClaimHeadersAnnotation writes verified claims into request headers, as a
+// comma-separated list of header=claim pairs:
+//
+//	tsjwt.dev/claim-headers: Tailscale-User-Login=email,X-Roles=roles
+//
+// It exists so a backend that already trusts an identity header can move
+// behind the gateway without being changed. The header then comes from an
+// identity the gateway established itself, and the signed assertion travels
+// beside it, so the backend can start verifying whenever it is ready.
+//
+// Read it as a migration path. A backend reading these headers is still
+// trusting its network position; a backend verifying the assertion is not.
+const ClaimHeadersAnnotation = "tsjwt.dev/claim-headers"
+
 // RouteError explains why one rule of an HTTPRoute could not be used. It is
 // reported back on the route's status rather than failing the whole table: a
 // single bad rule must not take down every other route on the Gateway.
@@ -149,6 +163,10 @@ func translateRule(r *gwapi.HTTPRoute, ri int, rule gwapi.HTTPRouteRule,
 		audience = fmt.Sprintf("%s.%s", s.Name, s.Namespace)
 	}
 	tenant := r.Annotations[TenantAnnotation]
+	claimHeaders, err := parseClaimHeaders(r.Annotations[ClaimHeadersAnnotation])
+	if err != nil {
+		return nil, &RouteError{name, gwapi.RouteReasonUnsupportedValue, err.Error()}
+	}
 
 	prefixes := pathPrefixes(rule)
 	if len(prefixes) == 0 {
@@ -162,12 +180,13 @@ func translateRule(r *gwapi.HTTPRoute, ri int, rule gwapi.HTTPRouteRule,
 	out := make([]proxy.Route, 0, len(prefixes))
 	for pi, prefix := range prefixes {
 		out = append(out, proxy.Route{
-			Name:       fmt.Sprintf("%s.%d", name, pi),
-			Hostnames:  hostnames,
-			PathPrefix: prefix,
-			Upstream:   upstream,
-			Audience:   audience,
-			Tenant:     tenant,
+			Name:         fmt.Sprintf("%s.%d", name, pi),
+			Hostnames:    hostnames,
+			PathPrefix:   prefix,
+			Upstream:     upstream,
+			Audience:     audience,
+			Tenant:       tenant,
+			ClaimHeaders: claimHeaders,
 		})
 	}
 	return out, nil
@@ -344,4 +363,36 @@ func routeStatusCondition(gen int64, accepted bool, reason gwapi.RouteConditionR
 // the two.
 func RenderFor(gateway string, revision int64, routes []proxy.Route) routetable.RouteFile {
 	return routetable.Render(gateway, revision, routes)
+}
+
+// parseClaimHeaders reads the claim-headers annotation.
+//
+// An unknown claim name is refused rather than ignored: a header that
+// silently never appears looks like the backend is at fault.
+func parseClaimHeaders(v string) (map[string]string, error) {
+	if strings.TrimSpace(v) == "" {
+		return nil, nil
+	}
+	known := map[string]bool{
+		"sub": true, "subject": true, "email": true, "name": true,
+		"node": true, "tenant": true, "tenants": true, "roles": true, "groups": true,
+	}
+	out := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		header, claim, ok := strings.Cut(pair, "=")
+		header, claim = strings.TrimSpace(header), strings.TrimSpace(claim)
+		if !ok || header == "" || claim == "" {
+			return nil, fmt.Errorf("claim-headers: %q is not header=claim", pair)
+		}
+		if !known[claim] {
+			return nil, fmt.Errorf("claim-headers: %q is not a claim that can be "+
+				"written to a header", claim)
+		}
+		out[header] = claim
+	}
+	return out, nil
 }
