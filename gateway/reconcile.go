@@ -8,6 +8,7 @@ import (
 	"github.com/bitcomplete/tsjwt/routetable"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -97,6 +98,26 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return nil
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("routes ConfigMap: %w", err)
+	}
+
+	// The data plane publishes its verification keys, so it needs a Role
+	// naming exactly that ConfigMap. Provisioned per Gateway because the
+	// name depends on the Gateway.
+	role := KeysRole(&gw)
+	if err := r.apply(ctx, &gw, role, func() error {
+		role.Rules = KeysRole(&gw).Rules
+		return nil
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("keys Role: %w", err)
+	}
+	rb := KeysRoleBinding(&gw, r.Config.ServiceAccount)
+	if err := r.apply(ctx, &gw, rb, func() error {
+		want := KeysRoleBinding(&gw, r.Config.ServiceAccount)
+		rb.RoleRef = want.RoleRef
+		rb.Subjects = want.Subjects
+		return nil
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("keys RoleBinding: %w", err)
 	}
 
 	svc := Service(&gw)
@@ -251,6 +272,8 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Watches(&gwapi.HTTPRoute{}, routeToGateways).
 		Complete(r)
 }

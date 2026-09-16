@@ -1,0 +1,84 @@
+# The controller reads the Gateway API resources and owns what it provisions
+# from them. It is deliberately narrow: it can create the workloads a Gateway
+# implies, and nothing else.
+#
+# Note what is absent. There is no access to Secrets. The controller names a
+# Secret in a pod spec and the kubelet resolves it, so the controller never
+# reads the tailnet credential it wires up.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tsjwt-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tsjwt-controller
+rules:
+  # The resources it implements.
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [gatewayclasses, gateways, httproutes]
+    verbs: [get, list, watch]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [gatewayclasses/status, gateways/status, httproutes/status]
+    verbs: [get, update, patch]
+
+  # Backends are resolved to build routes. Read only: a Gateway names a
+  # Service, it does not change one.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch]
+
+  # What it provisions for each Gateway.
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [create, update, patch, delete]
+
+  # It provisions a narrow Role for each data plane. Kubernetes requires a
+  # grantor to hold every permission it grants, which is why the controller
+  # holds the ConfigMap verbs above.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    verbs: [get, list, watch, create, update, patch, delete]
+
+  # Leader election, so two controllers do not fight over the same Gateway.
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tsjwt-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tsjwt-controller
+subjects:
+  - kind: ServiceAccount
+    name: tsjwt-controller
+    namespace: tsjwt-system
+---
+# The data plane's account. It needs no access to routes: those arrive in a
+# mounted ConfigMap, which the kubelet delivers. The only thing it needs the
+# API for is publishing its verification keys so that replicas can verify each
+# other's tokens.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tsjwt-dataplane
+---
+# The data plane's Role and RoleBinding are provisioned per Gateway by the
+# controller, not installed here. The ConfigMap it publishes keys to is named
+# after its Gateway, so a static Role could only be written by granting get
+# and update on every ConfigMap in the namespace — including its own route
+# table, the one thing it must not be able to rewrite.

@@ -9,6 +9,7 @@ import (
 	"github.com/bitcomplete/tsjwt/routetable"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -22,7 +23,7 @@ func reconcileScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
-		corev1.AddToScheme, appsv1.AddToScheme, gwapi.Install,
+		corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme, gwapi.Install,
 	} {
 		if err := add(s); err != nil {
 			t.Fatalf("scheme: %v", err)
@@ -215,4 +216,90 @@ func findCondition(conds []metav1.Condition, t string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+// TestDataPlaneRoleCannotRewriteItsOwnRoutes is why the Role is provisioned
+// per Gateway rather than installed once.
+//
+// The data plane publishes verification keys, so it needs get and update on
+// one ConfigMap. A Role broad enough to be written statically would cover
+// every ConfigMap in the namespace, including its own route table — which
+// would let a compromised data plane rewrite where it forwards, and to which
+// audience.
+func TestDataPlaneRoleCannotRewriteItsOwnRoutes(t *testing.T) {
+	t.Parallel()
+	gc := gatewayClass("tsjwt", gateway.ControllerName)
+	g := gatewayWithClass("edge", "infra", "tsjwt")
+
+	r, c := newReconciler(t, gc, g)
+	ctx := context.Background()
+	if _, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "infra", Name: "edge"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var role rbacv1.Role
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "infra", Name: "tsjwt-edge-keys"}, &role); err != nil {
+		t.Fatalf("keys Role: %v", err)
+	}
+
+	for _, rule := range role.Rules {
+		for _, verb := range rule.Verbs {
+			if verb == "create" {
+				continue // create cannot be name-scoped by the API
+			}
+			if len(rule.ResourceNames) == 0 {
+				t.Fatalf("verb %q is granted on every ConfigMap in the namespace, "+
+					"including the data plane's own route table", verb)
+			}
+			for _, n := range rule.ResourceNames {
+				if n != "tsjwt-edge-keys" {
+					t.Fatalf("verb %q reaches %q, which is not the key set", verb, n)
+				}
+			}
+		}
+	}
+
+	var rb rbacv1.RoleBinding
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "infra", Name: "tsjwt-edge-keys"}, &rb); err != nil {
+		t.Fatalf("keys RoleBinding: %v", err)
+	}
+	if len(rb.Subjects) != 1 || rb.Subjects[0].Name != "tsjwt-dataplane" {
+		t.Fatalf("bound to %v, want the data plane's account", rb.Subjects)
+	}
+}
+
+// TestProvisionedResourcesAreOwned checks everything the controller creates
+// is garbage collected with its Gateway. Orphaned tailnet nodes are worse
+// than orphaned Kubernetes objects: they keep a name and stay in the tailnet.
+func TestProvisionedResourcesAreOwned(t *testing.T) {
+	t.Parallel()
+	gc := gatewayClass("tsjwt", gateway.ControllerName)
+	g := gatewayWithClass("edge", "infra", "tsjwt")
+
+	r, c := newReconciler(t, gc, g)
+	ctx := context.Background()
+	if _, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "infra", Name: "edge"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		obj  client.Object
+	}{
+		{"tsjwt-edge", &appsv1.StatefulSet{}},
+		{"tsjwt-edge", &corev1.Service{}},
+		{"tsjwt-edge-routes", &corev1.ConfigMap{}},
+		{"tsjwt-edge-keys", &rbacv1.Role{}},
+		{"tsjwt-edge-keys", &rbacv1.RoleBinding{}},
+	} {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "infra", Name: tc.name}, tc.obj); err != nil {
+			t.Fatalf("%T %s: %v", tc.obj, tc.name, err)
+		}
+		owners := tc.obj.GetOwnerReferences()
+		if len(owners) != 1 || owners[0].Kind != "Gateway" || owners[0].Name != "edge" {
+			t.Fatalf("%T %s has owners %v, want the Gateway", tc.obj, tc.name, owners)
+		}
+	}
 }
