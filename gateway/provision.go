@@ -1,0 +1,257 @@
+package gateway
+
+import (
+	"fmt"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	gwapi "sigs.k8s.io/gateway-api/apis/v1"
+)
+
+// Config is what the controller needs to know about its own deployment in
+// order to provision data planes that look like it.
+type Config struct {
+	// Image is the data plane image. Required.
+	Image string
+
+	// ServiceAccount the data plane runs as. It needs no Kubernetes
+	// access for routes — they arrive in a mounted ConfigMap — but it may
+	// need access to publish verification keys.
+	ServiceAccount string
+
+	// CredentialSecret holds TS_OAUTH_CLIENT_ID and
+	// TS_OAUTH_CLIENT_SECRET, used to mint a tailnet auth key at startup.
+	// Required.
+	CredentialSecret string
+
+	// Tag is the tailnet tag minted keys carry. Required.
+	Tag string
+
+	// StorageClass backs each data plane's volume. Empty uses the
+	// cluster default.
+	StorageClass string
+
+	// Zone pins data planes to one failure domain, when a cluster needs
+	// it. Optional.
+	Zone string
+}
+
+// names derives the resource names for one Gateway. They are derived rather
+// than configurable so that a Gateway and everything it owns can always be
+// found from the Gateway's own name.
+type names struct{ gw *gwapi.Gateway }
+
+func (n names) statefulSet() string { return "tsjwt-" + n.gw.Name }
+func (n names) service() string     { return "tsjwt-" + n.gw.Name }
+func (n names) routes() string      { return "tsjwt-" + n.gw.Name + "-routes" }
+func (n names) keys() string        { return "tsjwt-" + n.gw.Name + "-keys" }
+func (n names) hostname() string    { return n.gw.Name }
+
+func (n names) labels() map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       "tsjwt",
+		"app.kubernetes.io/managed-by": "tsjwt-gateway-controller",
+		"tsjwt.dev/gateway":            n.gw.Name,
+	}
+}
+
+// RoutesConfigMap is the ConfigMap the data plane mounts. It is the only
+// channel between the controller and the data plane, which is why the data
+// plane needs no Kubernetes access to serve.
+func RoutesConfigMap(gw *gwapi.Gateway, rendered string) *corev1.ConfigMap {
+	n := names{gw}
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: n.routes(), Namespace: gw.Namespace, Labels: n.labels(),
+		},
+		Data: map[string]string{"routes.json": rendered},
+	}
+}
+
+// Service exposes the data plane's key set and health to the cluster.
+//
+// It deliberately does not expose the proxy. Callers reach that over
+// WireGuard, which never enters the cluster network, so there is nothing for
+// a Service to balance. Verification is different: a backend fetches the key
+// set over the cluster network, and any replica can answer.
+func Service(gw *gwapi.Gateway) *corev1.Service {
+	n := names{gw}
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: n.service(), Namespace: gw.Namespace, Labels: n.labels(),
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: n.labels(),
+			Ports: []corev1.ServicePort{{
+				Name: "jwks", Port: 9100, TargetPort: intstr.FromString("jwks"),
+			}},
+		},
+	}
+}
+
+// StatefulSet provisions the data plane for one Gateway.
+//
+// A StatefulSet and not a Deployment, for two reasons that both come from the
+// data plane being its own tailnet node. Each replica needs its own tailnet
+// state, which is a node key and so cannot be shared. And each needs a stable
+// name, because the tailnet hostname comes from the pod name: without that, a
+// rescheduled replica registers as a new node and abandons the old one.
+func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv1.StatefulSet, error) {
+	if cfg.Image == "" {
+		return nil, fmt.Errorf("gateway: Config.Image is required")
+	}
+	if cfg.CredentialSecret == "" {
+		return nil, fmt.Errorf("gateway: Config.CredentialSecret is required")
+	}
+	if cfg.Tag == "" {
+		return nil, fmt.Errorf("gateway: Config.Tag is required")
+	}
+	n := names{gw}
+	replicas := int32(1)
+
+	args := []string{
+		"-gateway=" + gw.Namespace + "/" + gw.Name,
+		"-hostname=$(POD_NAME)",
+		"-routes=/etc/tsjwt/routes.json",
+		"-state-dir=/var/lib/tsjwt",
+		"-tenants=/etc/tsjwt-tenants/tenants.json",
+		"-issuer=https://" + n.hostname(),
+		"-listen=:443",
+		"-jwks-listen=0.0.0.0:9100",
+		"-key-tags=" + cfg.Tag,
+		"-share-keys=" + n.keys(),
+	}
+
+	env := []corev1.EnvVar{
+		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+		{Name: "TS_OAUTH_CLIENT_ID", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: cfg.CredentialSecret},
+				Key:                  "TS_OAUTH_CLIENT_ID"}}},
+		{Name: "TS_OAUTH_CLIENT_SECRET", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: cfg.CredentialSecret},
+				Key:                  "TS_OAUTH_CLIENT_SECRET"}}},
+	}
+
+	nonRoot := true
+	noEscalate := false
+	readOnlyRoot := true
+	uid := int64(65532)
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: n.statefulSet(), Namespace: gw.Namespace, Labels: n.labels(),
+		},
+		Spec: appsv1.StatefulSetSpec{
+			ServiceName:         n.service(),
+			Replicas:            &replicas,
+			PodManagementPolicy: appsv1.ParallelPodManagement,
+			Selector:            &metav1.LabelSelector{MatchLabels: n.labels()},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: n.labels()},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: cfg.ServiceAccount,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &nonRoot,
+						// Distroless names its user, and the kubelet
+						// cannot check a name against RunAsNonRoot.
+						RunAsUser:      &uid,
+						RunAsGroup:     &uid,
+						FSGroup:        &uid,
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					Containers: []corev1.Container{{
+						Name:    "tsjwt",
+						Image:   cfg.Image,
+						Command: []string{"/usr/local/bin/tsjwt-dataplane"},
+						Args:    args,
+						Env:     env,
+						Ports: []corev1.ContainerPort{
+							{Name: "jwks", ContainerPort: 9100},
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "state", MountPath: "/var/lib/tsjwt"},
+							{Name: "routes", MountPath: "/etc/tsjwt", ReadOnly: true},
+							{Name: "tenants", MountPath: "/etc/tsjwt-tenants", ReadOnly: true},
+						},
+						// Readiness, not liveness, for the route table.
+						// A data plane with no routes yet is starting,
+						// not broken, and restarting it would not help.
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+								Path: "/readyz", Port: intstr.FromString("jwks")}},
+							PeriodSeconds:    5,
+							FailureThreshold: 24,
+						},
+						// Liveness tracks the auth key, which the data
+						// plane reports unhealthy on before it expires
+						// so the restart is scheduled rather than an
+						// outage.
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+								Path: "/healthz", Port: intstr.FromString("jwks")}},
+							InitialDelaySeconds: 10,
+							PeriodSeconds:       30,
+							FailureThreshold:    4,
+						},
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: &noEscalate,
+							ReadOnlyRootFilesystem:   &readOnlyRoot,
+							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+						},
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("10m"),
+								corev1.ResourceMemory: resource.MustParse("64Mi"),
+							},
+							Limits: corev1.ResourceList{
+								corev1.ResourceMemory: resource.MustParse("256Mi"),
+							},
+						},
+					}},
+					Volumes: []corev1.Volume{
+						{Name: "routes", VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: n.routes()},
+								// Optional, so a data plane starts before
+								// the controller has rendered anything.
+								// It serves 503 until routes arrive,
+								// rather than failing to mount.
+								Optional: boolPtr(true),
+							}}},
+						{Name: "tenants", VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: tenantsConfigMap},
+							}}},
+					},
+				},
+			},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+				ObjectMeta: metav1.ObjectMeta{Name: "state"},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						}},
+				},
+			}},
+		},
+	}
+	if cfg.StorageClass != "" {
+		sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName = &cfg.StorageClass
+	}
+	if cfg.Zone != "" {
+		sts.Spec.Template.Spec.NodeSelector = map[string]string{
+			"topology.kubernetes.io/zone": cfg.Zone,
+		}
+	}
+	return sts, nil
+}
+
+func boolPtr(b bool) *bool { return &b }
