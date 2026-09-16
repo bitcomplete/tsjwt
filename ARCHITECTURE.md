@@ -201,6 +201,43 @@ Two details make that work:
   path a request took. The second is what makes reaching a port prove
   nothing.
 
+## Gateway API
+
+The gateway above is implemented, as Kubernetes Gateway API. Two decisions
+shaped it.
+
+**It cannot be a layer in front of Envoy.** A Gateway that does not terminate
+the connection itself cannot ask the network who the caller is, and that
+question is the whole function. So the controller provisions nodes of this
+project's own proxy, and those nodes route.
+
+**The control plane is not in the request path.** The controller resolves
+routes and writes them to a ConfigMap; the data plane mounts it. So the data
+plane needs no access to the Kubernetes API, which matters most exactly when
+the API is unavailable, and a controller that stops does not stop traffic.
+
+```
+Gateway ─────▶ controller ─────▶ StatefulSet, Service, ConfigMap, Role
+HTTPRoute ────┘                            │ the kubelet mounts the routes
+                                      data plane ─────▶ backends
+```
+
+The audience is derived from the backend Service. Two services behind one
+Gateway therefore cannot share one, without anyone having to choose names.
+
+Three things are refused rather than approximated, because each would issue a
+token that says something untrue:
+
+* more than one backend for a rule, because the audience must be decided by
+  the backend;
+* an exact path match, because this router matches prefixes and widening it
+  would serve paths the author did not ask for;
+* an unknown claim name in `claim-headers`, because a header that silently
+  never appears looks like the backend is at fault.
+
+A rule that is refused is reported on its route's status, and the other routes
+still load.
+
 ## Why not tsidp
 
 Tailscale has an OIDC identity provider, `tsidp`. It looks like an answer to
