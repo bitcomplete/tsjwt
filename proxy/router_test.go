@@ -140,3 +140,84 @@ func TestAudienceFollowsTheRoute(t *testing.T) {
 		}
 	}
 }
+
+// TestClaimHeadersAreStrippedAcrossRoutes is the subtle half of claim
+// headers. Stripping only the matched route's headers would let a caller
+// supply one that another route sets and reach a backend through a route that
+// leaves it alone.
+func TestClaimHeadersAreStrippedAcrossRoutes(t *testing.T) {
+	t.Parallel()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// This route sets no claim headers, so nothing the caller sent
+		// may survive.
+		if v := r.Header.Get("Tailscale-User-Login"); v != "" {
+			t.Errorf("a caller-supplied identity header reached the backend: %q", v)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	up := mustURL(t, backend.URL)
+
+	router, err := proxy.NewRouter(
+		proxy.Route{Name: "legacy", Hostnames: []string{"legacy.test"},
+			Upstream: up, Audience: "legacy",
+			ClaimHeaders: map[string]string{"Tailscale-User-Login": "email"}},
+		proxy.Route{Name: "plain", Hostnames: []string{"plain.test"},
+			Upstream: up, Audience: "plain"},
+	)
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	px, err := proxy.New(proxy.Config{Router: router, Signer: dynamicSigner(t)})
+	if err != nil {
+		t.Fatalf("proxy: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "http://x/", nil)
+	r.Host = "plain.test"
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("Tailscale-User-Login", "someone-else@example.com")
+	rec := httptest.NewRecorder()
+	px.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+}
+
+// TestClaimHeadersAreWritten checks the migration path works: a backend that
+// reads an identity header sees one derived from the verified identity.
+func TestClaimHeadersAreWritten(t *testing.T) {
+	t.Parallel()
+	var login, roles string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		login = r.Header.Get("Tailscale-User-Login")
+		roles = r.Header.Get("X-Roles")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	router, err := proxy.NewRouter(proxy.Route{
+		Name: "legacy", Upstream: mustURL(t, backend.URL), Audience: "legacy",
+		ClaimHeaders: map[string]string{
+			"Tailscale-User-Login": "email",
+			"X-Roles":              "roles",
+		}})
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	px, err := proxy.New(proxy.Config{Router: router, Signer: dynamicSigner(t)})
+	if err != nil {
+		t.Fatalf("proxy: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "http://x/", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("Tailscale-User-Login", "forged@example.com")
+	px.ServeHTTP(httptest.NewRecorder(), r)
+
+	if login == "forged@example.com" {
+		t.Fatal("the caller's value survived; it must be replaced by the verified one")
+	}
+	if roles != "admin" {
+		t.Fatalf("X-Roles = %q, want the verified roles", roles)
+	}
+}

@@ -38,6 +38,11 @@ type RouteEntry struct {
 	Upstream   string   `json:"upstream"`
 	Audience   string   `json:"audience"`
 	Tenant     string   `json:"tenant,omitempty"`
+
+	// ClaimHeaders writes verified claims into request headers, so a
+	// backend that already reads an identity header can move behind the
+	// gateway unchanged.
+	ClaimHeaders map[string]string `json:"claimHeaders,omitempty"`
 }
 
 // Render turns a route table into the file form.
@@ -47,6 +52,7 @@ func Render(gateway string, revision int64, routes []proxy.Route) RouteFile {
 		out.Routes = append(out.Routes, RouteEntry{
 			Name: r.Name, Hostnames: r.Hostnames, PathPrefix: r.PathPrefix,
 			Upstream: r.Upstream.String(), Audience: r.Audience, Tenant: r.Tenant,
+			ClaimHeaders: r.ClaimHeaders,
 		})
 	}
 	return out
@@ -71,6 +77,7 @@ func (f RouteFile) Parse() ([]proxy.Route, error) {
 		r := proxy.Route{
 			Name: e.Name, Hostnames: e.Hostnames, PathPrefix: e.PathPrefix,
 			Upstream: u, Audience: e.Audience, Tenant: e.Tenant,
+			ClaimHeaders: e.ClaimHeaders,
 		}
 		if err := r.Valid(); err != nil {
 			return nil, fmt.Errorf("route %d: %w", i, err)
