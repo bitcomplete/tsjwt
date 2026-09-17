@@ -31,7 +31,14 @@ jobs:
       - name: test
         run: |
           go test -race ./...
+          (cd tsnetid && go test -race ./...)
           (cd gateway && go test -race ./...)
+
+      # The token parser runs on fully attacker-controlled input before any
+      # signature check. The seed corpus runs as ordinary tests above; this is
+      # a short live fuzz to catch a regression that a seed would not.
+      - name: fuzz the token parser
+        run: go test ./jwt/ -run '^$' -fuzz FuzzParseAndVerify -fuzztime 30s
 
       # The core must never grow a dependency. A backend that only verifies
       # tokens takes on nothing, and that is a property worth enforcing
@@ -196,3 +203,20 @@ jobs:
           { echo '## Load test'; echo; echo '```';
             grep -E 'Requests/sec|Average|Slowest|^ +\[' /tmp/hey.txt || true;
             echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  # Known-vulnerability scan across every module. govulncheck does call-graph
+  # reachability, so it reports only vulnerabilities the code can actually
+  # reach, including through the tailscale dependency tree in tsnetid.
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.26'}
+      - name: govulncheck
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+          (cd tsnetid && govulncheck ./...)
+          (cd gateway && govulncheck ./...)
