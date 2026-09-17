@@ -24,18 +24,19 @@ control plane, not from the peer.
 | Present a tagged node's full, person-looking `UserProfile` | Refused. The guard reads the tag, not the profile. |
 | Reassign a login name to move a subject | Subject follows the numeric user id, which the peer cannot choose. |
 | Claim groups without a capability grant, or under another capability name | No groups. Groups come from the named grant only. |
+| Send a packet to the gateway with a forged inner source address (bind another node's tailnet IP, then connect) | Dropped at the transport. A throwaway node sent one request from its real source and one from a forged source: the real one connected, the forged one timed out with no TCP handshake. WireGuard drops a packet whose inner source is not in the sending peer's AllowedIPs. |
 
-Each case is a test in `tsnetid/whois_test.go`, built from `WhoIs` answers
-recorded off a live tailnet. Each test was mutation-checked: we broke the
-guard three ways (guard on the empty profile, delete the guard, key the
-subject on the login name) and confirmed the tests fail every time.
+The header, profile, login and group cases are tests in
+`tsnetid/whois_test.go`, built from `WhoIs` answers recorded off a live
+tailnet. Each was mutation-checked: we broke the guard three ways (guard on
+the empty profile, delete the guard, key the subject on the login name) and
+confirmed the tests fail every time. The transport case was measured against
+the live gateway; the same connection also drew a live `401 ... is a tagged
+node, not a person` from the gateway, so the tagged-node guard was confirmed
+on a real connection, not only in the unit test.
 
-*What remains unmeasured.* Two items, both below this library:
+*What remains unmeasured.* One item, and it is not testable on this tailnet:
 
-- **Source-address spoofing at the transport.** WireGuard accepts a packet
-  for an address only if that address is in the sending peer's AllowedIPs,
-  so a forged source is dropped before `tailscaled` sees it. This is a
-  property of WireGuard, which we did not re-test here.
 - **A second human account.** The tailnet used has one human account. We
   could not make one person's node present as another person. Impersonation
   across *machine* principals was tested, and is refused.
