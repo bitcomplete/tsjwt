@@ -48,6 +48,14 @@ item in the deployment.
 **Each backend verifies.** A backend that reads the header, but does not
 check the signature, has the problem that this library removes.
 
+**The path from the signer to the backend is trusted.** The assertion is a
+bearer token on that hop: anything that can read it, or reach the backend
+directly, can present it until it expires. The short lifetime bounds this,
+and a backend that wires the optional replay guard makes each token
+single-use; both are weaker than confining the hop. Restrict who reaches the
+backend (a network policy), and keep the lifetime short. This is the same
+trust that every identity-aware proxy places in the network behind it.
+
 ## What is not in scope
 
 * **A stolen device.** A person with an unlocked device gets the identity of
