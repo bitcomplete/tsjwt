@@ -10,13 +10,15 @@ import (
 	"tailscale.com/tailcfg"
 )
 
-// The answers below are recorded from a live tailnet on 2026-09-16 with
-// `tailscale whois --json`. They are not invented. The tagged shapes matter:
-// a tagged node returns a complete, person-looking UserProfile, and every
-// tagged node in the tailnet shares one user id.
+// The *shapes* below are what a live tailnet returns from `tailscale whois
+// --json`, verified on 2026-09-16: a tagged node returns a complete,
+// person-looking UserProfile, and every tagged node in the tailnet shares
+// one user id. The id values here are synthetic stand-ins — the guard only
+// cares that the tagged id is shared and differs from a human's, not what
+// the numbers are.
 const (
-	taggedUserID = 1744579493730840
-	humanUserID  = 729768600782029
+	taggedUserID = 900000000000001 // one id, shared by every tagged node
+	humanUserID  = 100000000000002 // a distinct id for a real person
 )
 
 func human() *apitype.WhoIsResponse {
