@@ -139,8 +139,13 @@ func (v *Verifier) Verify(ctx context.Context, token string) (tsjwt.Claims, erro
 		return zero, fmt.Errorf("%w: not yet valid", tsjwt.ErrInvalidToken)
 	}
 	if v.cfg.MaxLifetime > 0 && c.IssuedAt != 0 {
-		if life := time.Unix(c.Expiry, 0).Sub(time.Unix(c.IssuedAt, 0)); life > v.cfg.MaxLifetime {
-			return zero, fmt.Errorf("%w: lifetime %s exceeds the %s ceiling",
+		// A far-apart exp and iat overflow int64 nanoseconds and wrap to a
+		// negative Duration, which would slip past a "> MaxLifetime" test.
+		// Reject a non-positive span too, so a signer that mints an absurd
+		// lifetime stays bounded, which is the point of this second limit.
+		life := time.Unix(c.Expiry, 0).Sub(time.Unix(c.IssuedAt, 0))
+		if life <= 0 || life > v.cfg.MaxLifetime {
+			return zero, fmt.Errorf("%w: lifetime %s outside (0, %s]",
 				tsjwt.ErrInvalidToken, life, v.cfg.MaxLifetime)
 		}
 	}

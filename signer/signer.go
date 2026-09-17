@@ -201,7 +201,9 @@ func JWKSHandler(set KeySource, cacheFor time.Duration) http.Handler {
 	if cacheFor <= 0 {
 		cacheFor = 5 * time.Minute
 	}
-	secs := int(cacheFor.Seconds())
+	// int64, not int: on a 32-bit build int(cacheFor.Seconds()) could
+	// truncate a large duration into a negative or tiny max-age.
+	secs := int64(cacheFor / time.Second)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
