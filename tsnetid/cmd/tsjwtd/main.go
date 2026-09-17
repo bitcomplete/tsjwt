@@ -273,9 +273,12 @@ func run() error {
 		}
 		return fmt.Errorf("listen %s: %w", *listen, err)
 	}
+	// mux proxies to backends at "/", so it streams; bound the header read
+	// and idle keep-alive only, not the whole request or response.
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go rotateLoop(ctx, keySet, *rotate)
@@ -295,7 +298,10 @@ func run() error {
 			return fmt.Errorf("listen %s for redirects: %w", *redirect, err)
 		}
 		rs := &http.Server{
+			ReadTimeout:       15 * time.Second,
 			ReadHeaderTimeout: 10 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       120 * time.Second,
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				u := *r.URL
 				u.Scheme = "https"
@@ -334,7 +340,10 @@ func run() error {
 		js := &http.Server{
 			Addr:              *jwksLocal,
 			Handler:           jm,
+			ReadTimeout:       15 * time.Second,
 			ReadHeaderTimeout: 10 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		}
 		go func() {
 			slog.Info("serving key set", "listen", *jwksLocal)
