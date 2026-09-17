@@ -77,7 +77,10 @@ func main() {
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           mux,
+		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	slog.Info("serving", "listen", *listen, "issuer", *issuer, "audience", *audience, "jwks", *jwksURL)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

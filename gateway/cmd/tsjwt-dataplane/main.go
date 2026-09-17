@@ -253,7 +253,16 @@ func run() error {
 		fmt.Fprintf(w, "ok: %d routes at revision %d%s\n",
 			len(dyn.Routes()), source.Revision(), stale)
 	})
-	opsSrv := &http.Server{Addr: *jwksListen, Handler: ops, ReadHeaderTimeout: 10 * time.Second}
+	// Fixed, small payloads (JWKS and a status line): bound the whole
+	// request and response, not just the header, against a slow client.
+	opsSrv := &http.Server{
+		Addr:              *jwksListen,
+		Handler:           ops,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	if *jwksTLS {
 		// Some verifiers refuse a key set over plain HTTP, reasonably:
 		// Grafana is one, and says so rather than failing quietly.
@@ -305,7 +314,15 @@ func run() error {
 		return fmt.Errorf("listen %s: %w", *listen, err)
 	}
 
-	srv := &http.Server{Handler: dyn, ReadHeaderTimeout: 10 * time.Second}
+	// The proxy streams to backends (large queries, uploads, Grafana Live),
+	// so a whole-request ReadTimeout or WriteTimeout would cut legitimate
+	// traffic. Bound the header read and idle keep-alive; leave the body and
+	// response to stream.
+	srv := &http.Server{
+		Handler:           dyn,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
