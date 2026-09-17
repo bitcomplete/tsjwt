@@ -52,8 +52,34 @@ type Store struct {
 	Host string
 	// Client defaults to one trusting the cluster CA.
 	Client *http.Client
-	// Token defaults to the pod's service account token.
+	// Token, when set, is used verbatim on every request and never
+	// refreshed. Leave it empty in a cluster: a projected service account
+	// token expires, and the kubelet rewrites the file before it does, so a
+	// token read once at startup stops working within the hour. An empty
+	// Token makes each request read TokenPath instead. Set it only for a
+	// test or a caller that manages rotation itself.
 	Token string
+	// TokenPath is the service account token file, read on each request
+	// unless Token is set. Empty means the default in-pod path.
+	TokenPath string
+}
+
+// bearer returns the token to present on a request. A fixed Token wins; other-
+// wise the file is read afresh, so a rotated token is picked up without a
+// restart.
+func (s *Store) bearer() (string, error) {
+	if s.Token != "" {
+		return s.Token, nil
+	}
+	path := s.TokenPath
+	if path == "" {
+		path = tokenPath
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("k8sstore: read service account token: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 // New returns a store configured from the pod's service account.
@@ -65,8 +91,10 @@ func New(name string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("k8sstore: read namespace (is this running in a pod?): %w", err)
 	}
-	tok, err := os.ReadFile(tokenPath)
-	if err != nil {
+	// Read the token once here only to fail fast when this is not running in
+	// a pod. The value is deliberately not kept: each request reads the file
+	// again through bearer, so a rotated token is picked up (see F1).
+	if _, err := os.ReadFile(tokenPath); err != nil {
 		return nil, fmt.Errorf("k8sstore: read service account token: %w", err)
 	}
 	ca, err := os.ReadFile(caPath)
@@ -89,7 +117,6 @@ func New(name string) (*Store, error) {
 		Name:      name,
 		Namespace: strings.TrimSpace(string(ns)),
 		Host:      host,
-		Token:     strings.TrimSpace(string(tok)),
 		Client: &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
@@ -112,7 +139,11 @@ func (s *Store) do(ctx context.Context, method, url string, body []byte, content
 	if err != nil {
 		return 0, nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.Token)
+	tok, err := s.bearer()
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
