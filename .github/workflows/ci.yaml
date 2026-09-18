@@ -70,13 +70,16 @@ jobs:
           ./gitleaks detect --source . --config .gitleaks.toml --redact --verbose
 
       # gitleaks catches credentials, not internal network identifiers. A
-      # tailnet CGNAT address (100.64.0.0/10) never belongs in this repo:
+      # tailnet CGNAT address (the 100.64/10 range) never belongs in this repo:
       # examples use hostnames, not IPs. Fail if one slips in.
+      #
+      # This workflow file is excluded from its own scan: it documents the range
+      # in prose, and the check must not match the very text that describes it.
       - name: no tailnet addresses
         run: |
           set -euo pipefail
-          if git grep -nE '\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}\b'; then
-            echo "::error::a tailnet CGNAT address (100.64.0.0/10) is present; use an example host"
+          if git grep -nE '\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}\b' -- ':!.github/workflows/ci.yaml'; then
+            echo "::error::a tailnet CGNAT address (the 100.64/10 range) is present; use an example host"
             exit 1
           fi
 
