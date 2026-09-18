@@ -16,9 +16,13 @@ type PolicyFile struct {
 	// Tenants are every tenant known to this deployment.
 	Tenants []PolicyTenant `json:"tenants"`
 
-	// DefaultRole is granted inside a tenant to an identity that matches
-	// the tenant but no role rule. Empty means no access, which is the
-	// safer default and so the one that applies when the field is absent.
+	// DefaultRole is the role granted to an authenticated identity that
+	// matches no group rule. It applies ONLY to a single-tenant policy,
+	// where "the tenant" is unambiguous. In a multi-tenant policy it is
+	// ignored: granting an unmatched identity a role in every tenant would
+	// collapse tenant isolation, so a tenant is granted only when a group of
+	// the identity actually maps into it. Empty means no access, the safer
+	// default and the one that applies when the field is absent.
 	DefaultRole string `json:"defaultRole,omitempty"`
 }
 
@@ -95,8 +99,17 @@ func (p PolicyFile) Resolver() (TenantResolver, error) {
 				roles = append(roles, role)
 			}
 			if len(roles) == 0 {
-				if defaultRole == "" {
-					continue // no access to this tenant
+				// A file-wide defaultRole must never add a tenant the identity
+				// has no group relationship to. Applied per-tenant across a
+				// multi-tenant policy it would grant every tenant to every
+				// authenticated identity and collapse tenant isolation, which
+				// is the unit of isolation this package protects. It is
+				// therefore honoured only for a single-tenant policy, where
+				// "the tenant" is unambiguous, mirroring the single-tenant
+				// fallback in GroupTenantResolver. In a multi-tenant policy an
+				// identity gets only the tenants one of its groups maps into.
+				if defaultRole == "" || len(tenants) != 1 {
+					continue // no matching group in this tenant: no access
 				}
 				roles = []string{defaultRole}
 			}

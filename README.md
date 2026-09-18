@@ -117,13 +117,18 @@ deployment changes tenancy by changing a file, not the binary:
      "groups": {"group:admin": "admin", "group:eng": "editor"}},
     {"id": "globex",
      "groups": {"group:globex-admin": "admin"}}
-  ],
-  "defaultRole": "viewer"
+  ]
 }
 ```
 
 A caller may ask for a tenant, with `X-Tsjwt-Tenant` or `?tenant=`. The
 signer decides: a tenant the identity does not hold is refused with `403`.
+
+An identity is granted a tenant only when one of its groups maps into that
+tenant. A top-level `"defaultRole"` grants that role to an identity matching no
+group, but **only in a single-tenant policy** — in a multi-tenant policy it is
+ignored, because granting an unmatched identity a role in every tenant would
+break the isolation the line above promises.
 
 ## Use
 

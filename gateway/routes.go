@@ -132,11 +132,17 @@ func translateRule(r *gwapi.HTTPRoute, ri int, rule gwapi.HTTPRouteRule,
 			fmt.Sprintf("backend kind %q is not supported, only Service", *ref.Kind)}
 	}
 	ns := r.Namespace
-	if ref.Namespace != nil {
-		// A cross-namespace reference needs a ReferenceGrant, which the
-		// caller is expected to have checked. Translating it here
-		// without that check would let any route borrow any Service.
-		ns = string(*ref.Namespace)
+	if ref.Namespace != nil && string(*ref.Namespace) != r.Namespace {
+		// A cross-namespace backend reference is only legitimate when a
+		// ReferenceGrant in the target namespace permits it (Gateway API).
+		// This controller does not evaluate ReferenceGrants, so honouring the
+		// reference would let any route borrow any Service in the cluster and
+		// mint a token carrying that backend's audience. Refuse it rather than
+		// silently cross the namespace boundary.
+		return nil, &RouteError{name, gwapi.RouteReasonRefNotPermitted,
+			fmt.Sprintf("cross-namespace backendRef to namespace %q is not permitted: "+
+				"a ReferenceGrant is required and this controller does not evaluate one",
+				string(*ref.Namespace))}
 	}
 	key := ns + "/" + string(ref.Name)
 	s, ok := svc[key]
@@ -269,7 +275,38 @@ func attachedTo(gw *gwapi.Gateway, r *gwapi.HTTPRoute) bool {
 			ns = string(*p.Namespace)
 		}
 		if string(p.Name) == gw.Name && ns == gw.Namespace {
+			// Naming the Gateway is necessary but not sufficient: the
+			// Gateway's listeners decide which namespaces may attach, via
+			// allowedRoutes.namespaces (Gateway API, default From=Same).
+			// Without this check a route in any namespace could bind to a
+			// Gateway it does not own and shadow another tenant's routes.
+			return listenerAllowsNamespace(gw, r.Namespace)
+		}
+	}
+	return false
+}
+
+// listenerAllowsNamespace reports whether any of the Gateway's listeners admits
+// a route from routeNS, per allowedRoutes.namespaces. The Gateway API default
+// when unset is From=Same (only the Gateway's own namespace). From=Selector
+// needs the route namespace's labels, which this controller does not read, so
+// it fails closed until that lookup is wired in.
+func listenerAllowsNamespace(gw *gwapi.Gateway, routeNS string) bool {
+	for _, l := range gw.Spec.Listeners {
+		from := gwapi.NamespacesFromSame
+		if l.AllowedRoutes != nil && l.AllowedRoutes.Namespaces != nil && l.AllowedRoutes.Namespaces.From != nil {
+			from = *l.AllowedRoutes.Namespaces.From
+		}
+		switch from {
+		case gwapi.NamespacesFromAll:
 			return true
+		case gwapi.NamespacesFromSame:
+			if routeNS == gw.Namespace {
+				return true
+			}
+		case gwapi.NamespacesFromSelector:
+			// Selector needs the route namespace's labels, which this
+			// controller does not list; fail closed rather than guess.
 		}
 	}
 	return false

@@ -403,3 +403,109 @@ func TestVerifyWithWrongKeyStillRejects(t *testing.T) {
 		t.Errorf("expected ErrInvalidToken, got %v", err)
 	}
 }
+
+// signRaw signs an arbitrary claim payload with the set's current key, so a
+// test can craft a token shape the signer would never mint (e.g. one omitting
+// iat). It bypasses signer.Mint deliberately, standing in for a compromised or
+// non-standard signer holding a trusted key.
+func signRaw(t *testing.T, keySet *keys.Set, payload map[string]any) string {
+	t.Helper()
+	priv, kid, err := keySet.Current()
+	if err != nil {
+		t.Fatalf("current key: %v", err)
+	}
+	tok, err := jwt.Sign(priv, kid, payload)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return tok
+}
+
+// A validly-signed token that omits iat must not slip past the MaxLifetime
+// bound. Before the fix the bound was gated on iat != 0, so a token without iat
+// and a far-future exp verified with no lifetime limit at all.
+//
+// Regression for audit finding verifier-maxlifetime-skipped-when-iat-absent.
+func TestVerifyRejectsMissingIatWhenMaxLifetimeEnforced(t *testing.T) {
+	keySet, _ := keys.NewSet()
+	now := time.Unix(1_000_000, 0)
+
+	token := signRaw(t, keySet, map[string]any{
+		"iss": "https://example.com",
+		"aud": "myapp",
+		"sub": "user123",
+		"jti": "jti-no-iat",
+		"exp": now.Add(10 * 365 * 24 * time.Hour).Unix(), // ~10 years out
+		// iat and nbf deliberately omitted
+	})
+
+	v, _ := verifier.New(verifier.Config{
+		Issuer:      "https://example.com",
+		Audience:    "myapp",
+		Keys:        verifier.LocalKeys{Set: keySet},
+		MaxLifetime: 15 * time.Minute,
+		Now:         func() time.Time { return now },
+	})
+	_, err := v.Verify(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected rejection of a token that omits iat while MaxLifetime is enforced; it would otherwise be valid for ~10 years")
+	}
+	if !errors.Is(err, tsjwt.ErrInvalidToken) {
+		t.Errorf("expected ErrInvalidToken, got %v", err)
+	}
+}
+
+// A token whose exp is far beyond now must be rejected even when its exp-iat
+// span is small, so a future-dated (or backdated) iat cannot pair with a tiny
+// span to smuggle a token that is valid for years.
+//
+// Regression for audit finding verifier-maxlifetime-skipped-when-iat-absent
+// (the independent exp-vs-now bound).
+func TestVerifyRejectsExpBeyondMaxLifetimeDespiteSmallSpan(t *testing.T) {
+	keySet, _ := keys.NewSet()
+	now := time.Unix(1_000_000, 0)
+	farOut := now.Add(10 * 365 * 24 * time.Hour)
+
+	token := signRaw(t, keySet, map[string]any{
+		"iss": "https://example.com",
+		"aud": "myapp",
+		"sub": "user123",
+		"jti": "jti-future-iat",
+		"iat": farOut.Unix(),                      // future-dated
+		"exp": farOut.Add(5 * time.Minute).Unix(), // span is only 5m, but exp is ~10y away
+	})
+
+	v, _ := verifier.New(verifier.Config{
+		Issuer:      "https://example.com",
+		Audience:    "myapp",
+		Keys:        verifier.LocalKeys{Set: keySet},
+		MaxLifetime: 15 * time.Minute,
+		Now:         func() time.Time { return now },
+	})
+	_, err := v.Verify(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected rejection: exp is ~10 years from now even though exp-iat span is small")
+	}
+	if !errors.Is(err, tsjwt.ErrInvalidToken) {
+		t.Errorf("expected ErrInvalidToken, got %v", err)
+	}
+}
+
+// A normal token minted by the shipped signer (which always sets iat) still
+// verifies under MaxLifetime — the fix must not break the happy path.
+func TestVerifyAcceptsNormalTokenUnderMaxLifetime(t *testing.T) {
+	keySet, _ := keys.NewSet()
+	token, err := mintToken(keySet, "myapp")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	v, _ := verifier.New(verifier.Config{
+		Issuer:      "https://example.com",
+		Audience:    "myapp",
+		Keys:        verifier.LocalKeys{Set: keySet},
+		MaxLifetime: 15 * time.Minute,
+	})
+	if _, err := v.Verify(context.Background(), token); err != nil {
+		t.Errorf("normal token rejected under MaxLifetime: %v", err)
+	}
+}
