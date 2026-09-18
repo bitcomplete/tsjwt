@@ -17,6 +17,5 @@
         "group:globex-user": "member"
       }
     }
-  ],
-  "defaultRole": "viewer"
+  ]
 }

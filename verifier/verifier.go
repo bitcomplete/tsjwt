@@ -138,7 +138,15 @@ func (v *Verifier) Verify(ctx context.Context, token string) (tsjwt.Claims, erro
 	if c.NotBefore != 0 && now.Add(v.cfg.Leeway).Before(time.Unix(c.NotBefore, 0)) {
 		return zero, fmt.Errorf("%w: not yet valid", tsjwt.ErrInvalidToken)
 	}
-	if v.cfg.MaxLifetime > 0 && c.IssuedAt != 0 {
+	if v.cfg.MaxLifetime > 0 {
+		// The second lifetime limit must hold whatever the signer's config
+		// says, so it cannot be skipped just because iat is absent. A token
+		// that omits iat (IssuedAt == 0) would otherwise slip past the bound
+		// with an arbitrarily distant exp, since the exp check above only
+		// rejects an already-past expiry. Require iat when a limit is set.
+		if c.IssuedAt == 0 {
+			return zero, fmt.Errorf("%w: iat is required when a max lifetime is enforced", tsjwt.ErrInvalidToken)
+		}
 		// A far-apart exp and iat overflow int64 nanoseconds and wrap to a
 		// negative Duration, which would slip past a "> MaxLifetime" test.
 		// Reject a non-positive span too, so a signer that mints an absurd
@@ -147,6 +155,12 @@ func (v *Verifier) Verify(ctx context.Context, token string) (tsjwt.Claims, erro
 		if life <= 0 || life > v.cfg.MaxLifetime {
 			return zero, fmt.Errorf("%w: lifetime %s outside (0, %s]",
 				tsjwt.ErrInvalidToken, life, v.cfg.MaxLifetime)
+		}
+		// Independent of iat: exp must not be further from now than the limit
+		// (plus leeway). Without this a future-dated or backdated iat could
+		// pair with a small exp-iat span to smuggle a token valid for years.
+		if time.Unix(c.Expiry, 0).After(now.Add(v.cfg.MaxLifetime).Add(v.cfg.Leeway)) {
+			return zero, fmt.Errorf("%w: expiry is beyond the max lifetime from now", tsjwt.ErrInvalidToken)
 		}
 	}
 	if v.cfg.Replay != nil && v.cfg.Replay.Seen(c.ID, time.Unix(c.Expiry, 0)) {
