@@ -234,6 +234,20 @@ func run() error {
 		fmt.Fprintln(w, "ok")
 	})
 	ops.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		// The tailnet must have granted the EXACT name asked for. tsnet's
+		// Self.DNSName is the authoritative answer, so compare against it: if
+		// the name was taken and Tailscale appended a suffix (operate ->
+		// operate-1), or a rename otherwise landed elsewhere, this node is
+		// answering on a name no verifier expects (iss) and no client can
+		// reach. Serving anyway is a silent misconfiguration; fail readiness so
+		// the Gateway reports Programmed: False and the name problem is visible
+		// rather than an outage nobody can see. (An operate rename once served
+		// under the pod name with a green status, 2026-09-26.)
+		if got, _, _ := strings.Cut(strings.TrimSuffix(status.Self.DNSName, "."), "."); got != *hostname {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, "tailnet assigned %q, not the requested %q: a name collision or rename needs attention\n", got, *hostname)
+			return
+		}
 		// Ready means routes have been read at least once. Serving
 		// before that would answer 503 to everything, which looks like
 		// an outage rather than a startup.
