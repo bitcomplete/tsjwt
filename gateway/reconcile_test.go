@@ -422,6 +422,41 @@ func TestListenerHostnameBecomesTheNodeName(t *testing.T) {
 	}
 }
 
+// TestNodeNameSurvivesMatchingTheGatewayName pins the regression that took
+// operate down: a Gateway whose object name equals its listener hostname's first
+// label (a Gateway `operate` serving operate.<tailnet>) must still get
+// -hostname set to that label, not the pod name. hostnameArg once used
+// (label != gw.Name) as a proxy for "a hostname was declared", so this exact
+// case fell back to $(POD_NAME); the node joined as tsjwt-operate-0 and the
+// declared name resolved to nothing. The -hostname and -issuer args are checked
+// together because their whole point is that they cannot disagree: a node named
+// X must issue https://X, or a verifier expecting that issuer rejects its tokens.
+func TestNodeNameSurvivesMatchingTheGatewayName(t *testing.T) {
+	t.Parallel()
+	g := gatewayWithClass("operate", "infra", "tsjwt", "operate.example.ts.net")
+	sts, err := gateway.StatefulSet(g, gateway.Config{
+		Image: "img", CredentialSecret: "creds", Tag: "tag:example",
+	}, "tenants")
+	if err != nil {
+		t.Fatalf("statefulset: %v", err)
+	}
+	var host, issuer string
+	for _, a := range sts.Spec.Template.Spec.Containers[0].Args {
+		if strings.HasPrefix(a, "-hostname=") {
+			host = a
+		}
+		if strings.HasPrefix(a, "-issuer=") {
+			issuer = a
+		}
+	}
+	if host != "-hostname=operate" {
+		t.Errorf("hostname arg = %q, want -hostname=operate (not the pod name)", host)
+	}
+	if issuer != "-issuer=https://operate" {
+		t.Errorf("issuer arg = %q, want -issuer=https://operate (must agree with the node name)", issuer)
+	}
+}
+
 // TestJWKSOverTLSIsPerGateway checks the annotation, and that the probes
 // follow it. The probes share the key set's port, so a Gateway that serves
 // TLS without moving them leaves the kubelet speaking HTTP to an HTTPS

@@ -87,6 +87,25 @@ func (n names) serviceAccount() string { return "tsjwt-" + n.gw.Name + "-datapla
 // fight over it. A single name across replicas needs a Tailscale Service,
 // which is the unsolved half of running more than one.
 func (n names) hostname() string {
+	if h, ok := n.declaredHostname(); ok {
+		return h
+	}
+	return n.gw.Name
+}
+
+// declaredHostname is the node name a listener hostname asks for, and whether
+// any listener actually declared one.
+//
+// The bool is the whole point. The data plane has to tell "the Gateway declared
+// this name" apart from "we fell back to the Gateway's object name", and those
+// two can produce the SAME string: a Gateway named `grafana` serving
+// grafana.example.ts.net derives the label `grafana`, equal to its own name.
+// hostnameArg once used (label != gw.Name) as a proxy for "a hostname was
+// declared", which silently dropped exactly that case to the pod name -- the
+// data plane then joined as tsjwt-<gw>-0 and the declared name resolved to
+// nothing (an operate outage, 2026-09-26). Return the fact directly instead of
+// inferring it from string equality.
+func (n names) declaredHostname() (string, bool) {
 	for _, l := range n.gw.Spec.Listeners {
 		if l.Hostname == nil || *l.Hostname == "" {
 			continue
@@ -96,11 +115,11 @@ func (n names) hostname() string {
 			continue // a wildcard is not a name this node can take
 		}
 		if label, _, ok := strings.Cut(h, "."); ok && label != "" {
-			return label
+			return label, true
 		}
-		return h
+		return h, true
 	}
-	return n.gw.Name
+	return "", false
 }
 
 func (n names) labels() map[string]string {
@@ -405,8 +424,14 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 // hostnameArg gives the data plane its tailnet name. A Gateway that declares
 // a listener hostname gets that name; otherwise the pod's, which is stable
 // because this is a StatefulSet.
+//
+// It asks declaredHostname whether a hostname was declared rather than comparing
+// the derived name to the Gateway's own name: those can be equal (a Gateway
+// `operate` serving operate.<tailnet>), and treating that equality as "no
+// hostname declared" is what dropped the node to its pod name and broke the
+// declared name.
 func hostnameArg(gw *gwapi.Gateway) string {
-	if h := (names{gw}).hostname(); h != gw.Name {
+	if h, ok := (names{gw}).declaredHostname(); ok {
 		return "-hostname=" + h
 	}
 	return "-hostname=$(POD_NAME)"
