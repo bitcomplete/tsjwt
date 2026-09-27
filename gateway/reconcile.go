@@ -179,6 +179,9 @@ func (r *GatewayReconciler) render(ctx context.Context, gw *gwapi.Gateway) (stri
 	}
 
 	table, errs := Translate(gw, routes.Items, services.Items)
+	// Report acceptance back on each attached route's status before rendering
+	// the table, so a rejected route is visible to its author, not only logged.
+	r.applyRouteStatus(ctx, gw, routes.Items, errs)
 	// The generation is a usable revision: it changes when the Gateway
 	// does, and the data plane only uses it for logs and readiness.
 	file := routetable.Render(gw.Namespace+"/"+gw.Name, gw.Generation, table)
@@ -312,6 +315,63 @@ func (conditionHelpers) setCondition(conds *[]metav1.Condition, c metav1.Conditi
 		return
 	}
 	*conds = append(*conds, c)
+}
+
+// applyRouteStatus writes this controller's Accepted condition onto every route
+// attached to gw, so an author learns from the route's own status whether it
+// was accepted or why it was rejected — not only from the controller log. A
+// status write that fails is logged, never fatal to the reconcile.
+func (r *GatewayReconciler) applyRouteStatus(ctx context.Context, gw *gwapi.Gateway, routes []gwapi.HTTPRoute, errs []RouteError) {
+	l := log.FromContext(ctx)
+	ref := parentRefToGateway(gw)
+	for i := range routes {
+		route := &routes[i]
+		if !attachedTo(gw, route) {
+			continue
+		}
+		if !upsertRouteParentCondition(route, ref, routeAcceptedCondition(route, errs)) {
+			continue // unchanged; do not churn the status
+		}
+		if err := r.Status().Update(ctx, route); err != nil {
+			l.Error(err, "update HTTPRoute status", "route", route.Namespace+"/"+route.Name)
+		}
+	}
+}
+
+// upsertRouteParentCondition merges cond into the RouteParentStatus for this
+// controller and ref, and reports whether anything changed.
+func upsertRouteParentCondition(route *gwapi.HTTPRoute, ref gwapi.ParentReference, cond metav1.Condition) bool {
+	for i := range route.Status.Parents {
+		p := &route.Status.Parents[i]
+		if string(p.ControllerName) != ControllerName || !parentRefEqual(p.ParentRef, ref) {
+			continue
+		}
+		for j := range p.Conditions {
+			c := p.Conditions[j]
+			if c.Type == cond.Type {
+				if c.Status == cond.Status && c.Reason == cond.Reason &&
+					c.Message == cond.Message && c.ObservedGeneration == cond.ObservedGeneration {
+					return false // identical; leave it, and its transition time, alone
+				}
+				break
+			}
+		}
+		meta.setCondition(&p.Conditions, cond)
+		return true
+	}
+	route.Status.Parents = append(route.Status.Parents, gwapi.RouteParentStatus{
+		ParentRef:      ref,
+		ControllerName: gwapi.GatewayController(ControllerName),
+		Conditions:     []metav1.Condition{cond},
+	})
+	return true
+}
+
+func parentRefEqual(a, b gwapi.ParentReference) bool {
+	name := a.Name == b.Name
+	ns := (a.Namespace == nil && b.Namespace == nil) ||
+		(a.Namespace != nil && b.Namespace != nil && *a.Namespace == *b.Namespace)
+	return name && ns
 }
 
 var _ = apierrors.IsNotFound
