@@ -15,6 +15,8 @@ package tsnetid
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +26,29 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
 )
+
+// Tailscale addresses every node from CGNAT space (IPv4) and its own ULA range
+// (IPv6). A request whose source is outside both did not arrive from a direct
+// tailnet peer.
+var (
+	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
+	tailnetV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
+
+// isTailnetAddr reports whether remoteAddr ("host:port", as in
+// http.Request.RemoteAddr) is a Tailscale node address.
+func isTailnetAddr(remoteAddr string) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	return tailnetV4.Contains(ip) || tailnetV6.Contains(ip)
+}
 
 // CapGroups is the default capability name read from a peer's grants to
 // discover its groups. An operator declares it in the tailnet policy file.
@@ -75,6 +100,18 @@ func (s *Source) Identify(remoteAddr string) (tsjwt.Identity, error) {
 	var zero tsjwt.Identity
 	if s.Local == nil {
 		return zero, fmt.Errorf("%w: no tailnet local client", tsjwt.ErrNoIdentity)
+	}
+	// Identity is the WireGuard peer, so the source must be a tailnet address.
+	// A non-tailnet source means something terminated the connection in front
+	// of this node — an L7 proxy, or Tailscale Funnel — and this process can no
+	// longer see the real caller. Refuse rather than attribute the request to
+	// whatever fronted it. (This does not catch a fronting node that is itself
+	// on the tailnet; the design's rule that the proxy must be its own node,
+	// not sit behind one, still stands — see SECURITY.md.)
+	if !isTailnetAddr(remoteAddr) {
+		return zero, fmt.Errorf("%w: %s is not a tailnet address; the proxy must receive "+
+			"connections directly from tailnet peers, not from a fronting proxy or Funnel",
+			tsjwt.ErrNoIdentity, remoteAddr)
 	}
 	timeout := s.Timeout
 	if timeout <= 0 {
