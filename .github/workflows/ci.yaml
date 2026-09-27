@@ -40,6 +40,17 @@ jobs:
       - name: fuzz the token parser
         run: go test ./jwt/ -run '^$' -fuzz FuzzParseAndVerify -fuzztime 30s
 
+      # The token parser is the first surface, but every parser that reads
+      # attacker- or peer-controlled bytes must also never panic: the claim set,
+      # the shared key store, the rendered route file, and a fetched JWKS. A
+      # short live fuzz on each catches a regression a seed corpus would not.
+      - name: fuzz the parsers
+        run: |
+          go test ./ -run '^$' -fuzz '^FuzzClaimsUnmarshal$' -fuzztime 20s
+          go test ./keys/ -run '^$' -fuzz '^FuzzUnmarshalEntries$' -fuzztime 20s
+          go test ./routetable/ -run '^$' -fuzz '^FuzzRouteFileParse$' -fuzztime 20s
+          go test ./verifier/ -run '^$' -fuzz '^FuzzJWKSToPublic$' -fuzztime 20s
+
       # The core must never grow a dependency. A backend that only verifies
       # tokens takes on nothing, and that is a property worth enforcing
       # rather than documenting.
