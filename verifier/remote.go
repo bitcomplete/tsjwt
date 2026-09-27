@@ -38,6 +38,14 @@ type RemoteKeys struct {
 	// load onto the signer. Default 30 seconds.
 	MinRefetch time.Duration
 
+	// MaxStale is an absolute ceiling on how long a cached key set is served
+	// while the JWKS endpoint is unreachable. Within TTL a set is served
+	// freely; past TTL it is served only until it reaches MaxStale, then
+	// refused — so a rotated or revoked key stops being trusted even if the
+	// endpoint stays down. It must not exceed the signer's key overlap window.
+	// Default 1 hour.
+	MaxStale time.Duration
+
 	// Now replaces the time source. For tests.
 	Now func() time.Time
 
@@ -56,6 +64,10 @@ func (r *RemoteKeys) Key(ctx context.Context, kid string) (*ecdsa.PublicKey, err
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
+	maxStale := r.MaxStale
+	if maxStale <= 0 {
+		maxStale = time.Hour
+	}
 	now := r.now()
 
 	r.mu.RLock()
@@ -69,7 +81,19 @@ func (r *RemoteKeys) Key(ctx context.Context, kid string) (*ecdsa.PublicKey, err
 		// The key is known but the set is stale. Serve it and let the
 		// refresh below happen; a known kid is not a rotation signal.
 		if err := r.refresh(ctx, false); err != nil {
-			return k, nil // stale but usable beats failing closed here
+			// A failed refresh does not advance fetchedAt, so serve the cached
+			// key only until it reaches the absolute staleness ceiling. Past
+			// it, refuse even though the endpoint is down: a rotated or revoked
+			// key must not stay trusted indefinitely while the signer is
+			// unreachable.
+			r.mu.RLock()
+			age := r.now().Sub(r.fetchedAt)
+			r.mu.RUnlock()
+			if age <= maxStale {
+				return k, nil // stale but within the ceiling
+			}
+			return nil, fmt.Errorf("%w: cached key set is %s old (ceiling %s) and %s is unreachable: %v",
+				tsjwt.ErrNoKey, age.Round(time.Second), maxStale, r.URL, err)
 		}
 		r.mu.RLock()
 		defer r.mu.RUnlock()
