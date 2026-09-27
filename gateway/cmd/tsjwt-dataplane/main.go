@@ -155,9 +155,26 @@ func run() error {
 		keySource = published
 	}
 
+	// The trust anchor: identity comes from asking the tailnet about the
+	// connection's source address. Hold it in a variable so the startup
+	// assertion below can exercise it before we serve a single request.
+	idSource := &tsnetid.Source{Local: lc, Cap: tailcfg.PeerCapability(*capName)}
+
+	// Fail to boot rather than serve if the identity guard would trust a
+	// source that is not a tailnet peer. A direct WireGuard tsnet listener
+	// only ever hands us tailnet peer addresses; behind Funnel, a subnet
+	// router, or any terminating proxy, r.RemoteAddr becomes a loopback or
+	// public address and the whole model breaks. Assert once, at startup,
+	// that such an address is refused — so a regression that weakened the
+	// anchor stops the binary here instead of silently trusting proxied
+	// traffic. See SECURITY.md, "The network tells the truth about identity".
+	if err := assertRejectsNonTailnet(idSource); err != nil {
+		return err
+	}
+
 	sg, err := signer.New(signer.Config{
 		Issuer: *issuer, Keys: keySource, TTL: *ttl,
-		Identities: &tsnetid.Source{Local: lc, Cap: tailcfg.PeerCapability(*capName)},
+		Identities: idSource,
 		Tenants:    policy,
 	})
 	if err != nil {
@@ -371,4 +388,28 @@ func rotateLoop(ctx context.Context, set *keys.Set, every time.Duration) {
 			slog.Info("rotated signing key", "kid", kid)
 		}
 	}
+}
+
+// identifier is the slice of [tsnetid.Source] the startup assertion needs. It
+// exists so the assertion can be unit-tested without a live tailnet.
+type identifier interface {
+	Identify(remoteAddr string) (tsjwt.Identity, error)
+}
+
+// assertRejectsNonTailnet is a startup invariant: the identity source must
+// refuse a source address that is not a tailnet peer. These are the shapes a
+// terminating proxy or Funnel presents — IPv4 loopback, IPv6 loopback, and a
+// public address — none of which can occur on a correctly configured direct
+// tsnet listener. A returned identity for any of them means the trust anchor
+// has been weakened (the source-reject removed, AllowTagged misused, or the
+// source swapped), so fail closed at boot rather than serve.
+func assertRejectsNonTailnet(src identifier) error {
+	for _, addr := range []string{"127.0.0.1:1", "[::1]:1", "203.0.113.1:443"} {
+		if _, err := src.Identify(addr); !errors.Is(err, tsjwt.ErrNoIdentity) {
+			return fmt.Errorf(
+				"startup identity-guard check failed: non-tailnet source %s was not refused (err=%v); refusing to serve",
+				addr, err)
+		}
+	}
+	return nil
 }
