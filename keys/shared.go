@@ -217,6 +217,17 @@ func (p *Published) JWKS() JWKS {
 		if e.Lease.Add(p.grace).Before(now) {
 			continue
 		}
+		// A store entry is written by a peer replica; do not republish it under
+		// a kid that does not actually derive from its key. Reconstruct the key
+		// and confirm the kid is its RFC 7638 thumbprint, so a bad or hostile
+		// store write cannot introduce a key labelled with a trusted kid.
+		pub, err := PublicFromXY(e.X, e.Y)
+		if err != nil {
+			continue
+		}
+		if tp, err := Thumbprint(pub); err != nil || tp != e.Kid {
+			continue
+		}
 		seen[e.Kid] = struct{}{}
 		out.Keys = append(out.Keys, JWK{
 			Kty: "EC", Crv: "P-256", Kid: e.Kid, Use: "sig", Alg: "ES256",

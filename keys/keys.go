@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 )
@@ -216,4 +217,29 @@ func thumbprint(pub *ecdsa.PublicKey) (string, error) {
 	}
 	sum := sha256.Sum256(b)
 	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
+}
+
+// Thumbprint returns the RFC 7638 JWK thumbprint of pub — the value tsjwt uses
+// as a key id. It is exported so a consumer of a published key set can confirm
+// that a key's declared kid actually belongs to the key, instead of trusting
+// the label supplied alongside it.
+func Thumbprint(pub *ecdsa.PublicKey) (string, error) { return thumbprint(pub) }
+
+// PublicFromXY reconstructs a P-256 public key from base64url-encoded affine
+// coordinates, rejecting a point that is not on the curve. It is the inverse of
+// the x/y a JWK carries.
+func PublicFromXY(x, y string) (*ecdsa.PublicKey, error) {
+	xb, err := base64.RawURLEncoding.DecodeString(x)
+	if err != nil {
+		return nil, fmt.Errorf("keys: x is not base64url")
+	}
+	yb, err := base64.RawURLEncoding.DecodeString(y)
+	if err != nil {
+		return nil, fmt.Errorf("keys: y is not base64url")
+	}
+	pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(xb), Y: new(big.Int).SetBytes(yb)}
+	if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
+		return nil, fmt.Errorf("keys: point is not on P-256")
+	}
+	return pub, nil
 }

@@ -195,5 +195,17 @@ func jwkToPublic(j keys.JWK) (*ecdsa.PublicKey, error) {
 	if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
 		return nil, fmt.Errorf("point is not on P-256")
 	}
+	// The kid is defined as the RFC 7638 thumbprint of the key, so verify the
+	// declared kid actually derives from this key. Otherwise a publisher could
+	// label an attacker-chosen key with a kid a token names, and this cache
+	// would select that key to verify the token. A mismatched key is skipped
+	// (like any key this package cannot use) rather than trusted.
+	tp, err := keys.Thumbprint(pub)
+	if err != nil {
+		return nil, err
+	}
+	if j.Kid != tp {
+		return nil, fmt.Errorf("kid %q does not match key thumbprint", j.Kid)
+	}
 	return pub, nil
 }
