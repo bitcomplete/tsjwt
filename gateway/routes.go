@@ -275,12 +275,11 @@ func attachedTo(gw *gwapi.Gateway, r *gwapi.HTTPRoute) bool {
 			ns = string(*p.Namespace)
 		}
 		if string(p.Name) == gw.Name && ns == gw.Namespace {
-			// Naming the Gateway is necessary but not sufficient: the
-			// Gateway's listeners decide which namespaces may attach, via
-			// allowedRoutes.namespaces (Gateway API, default From=Same).
-			// Without this check a route in any namespace could bind to a
-			// Gateway it does not own and shadow another tenant's routes.
-			return listenerAllowsNamespace(gw, r.Namespace)
+			// Naming the Gateway is necessary but not sufficient: at least one
+			// listener's allowedRoutes.namespaces must admit the route's
+			// namespace (Gateway API, default From=Same). hostnamesFor then
+			// restricts what the route may serve to those same listeners.
+			return len(admittingListeners(gw, r.Namespace)) > 0
 		}
 	}
 	return false
@@ -291,25 +290,37 @@ func attachedTo(gw *gwapi.Gateway, r *gwapi.HTTPRoute) bool {
 // when unset is From=Same (only the Gateway's own namespace). From=Selector
 // needs the route namespace's labels, which this controller does not read, so
 // it fails closed until that lookup is wired in.
-func listenerAllowsNamespace(gw *gwapi.Gateway, routeNS string) bool {
+func listenerAdmits(l gwapi.Listener, gwNamespace, routeNS string) bool {
+	from := gwapi.NamespacesFromSame
+	if l.AllowedRoutes != nil && l.AllowedRoutes.Namespaces != nil && l.AllowedRoutes.Namespaces.From != nil {
+		from = *l.AllowedRoutes.Namespaces.From
+	}
+	switch from {
+	case gwapi.NamespacesFromAll:
+		return true
+	case gwapi.NamespacesFromSame:
+		return routeNS == gwNamespace
+	default:
+		// Selector needs the route namespace's labels, which this controller
+		// does not list; None admits nothing. Fail closed rather than guess.
+		return false
+	}
+}
+
+// admittingListeners returns the Gateway's listeners whose allowedRoutes admit a
+// route from routeNS. A route may attach through, and — crucially — may serve
+// the hostnames of, only these listeners. Evaluating this per listener rather
+// than per Gateway is what stops a route admitted by a permissive listener
+// (From=All) from serving a hostname that only a stricter listener (From=Same)
+// owns.
+func admittingListeners(gw *gwapi.Gateway, routeNS string) []gwapi.Listener {
+	var out []gwapi.Listener
 	for _, l := range gw.Spec.Listeners {
-		from := gwapi.NamespacesFromSame
-		if l.AllowedRoutes != nil && l.AllowedRoutes.Namespaces != nil && l.AllowedRoutes.Namespaces.From != nil {
-			from = *l.AllowedRoutes.Namespaces.From
-		}
-		switch from {
-		case gwapi.NamespacesFromAll:
-			return true
-		case gwapi.NamespacesFromSame:
-			if routeNS == gw.Namespace {
-				return true
-			}
-		case gwapi.NamespacesFromSelector:
-			// Selector needs the route namespace's labels, which this
-			// controller does not list; fail closed rather than guess.
+		if listenerAdmits(l, gw.Namespace, routeNS) {
+			out = append(out, l)
 		}
 	}
-	return false
+	return out
 }
 
 // hostnamesFor intersects the route's hostnames with the Gateway's listeners,
@@ -321,8 +332,11 @@ func listenerAllowsNamespace(gw *gwapi.Gateway, routeNS string) bool {
 // True with an empty list means neither side named any, so the route answers
 // for whatever reaches the Gateway.
 func hostnamesFor(gw *gwapi.Gateway, r *gwapi.HTTPRoute) ([]string, bool) {
+	// Only listeners that admit this route's namespace count. A route admitted
+	// through a From=All listener must not borrow the hostname of a From=Same
+	// listener that would not have admitted it.
 	var listener []string
-	for _, l := range gw.Spec.Listeners {
+	for _, l := range admittingListeners(gw, r.Namespace) {
 		if l.Hostname != nil && *l.Hostname != "" {
 			listener = append(listener, string(*l.Hostname))
 		}
