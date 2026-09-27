@@ -432,6 +432,30 @@ func dedupe(in []string) []string {
 	return out
 }
 
+// parentRefToGateway builds a ParentReference identifying gw, for a route's
+// parent status.
+func parentRefToGateway(gw *gwapi.Gateway) gwapi.ParentReference {
+	group := gwapi.Group("gateway.networking.k8s.io")
+	kind := gwapi.Kind("Gateway")
+	ns := gwapi.Namespace(gw.Namespace)
+	return gwapi.ParentReference{Group: &group, Kind: &kind, Namespace: &ns, Name: gwapi.ObjectName(gw.Name)}
+}
+
+// routeAcceptedCondition reports this controller's Accepted condition for a
+// route attached to gw, given the translation errors for the whole table: True
+// when every rule translated, or False with the first rejection's reason. It
+// lets a route author see acceptance (or why not) on the route's own status,
+// as Gateway API expects, rather than only in the controller log.
+func routeAcceptedCondition(route *gwapi.HTTPRoute, errs []RouteError) metav1.Condition {
+	key := route.Namespace + "/" + route.Name
+	for _, e := range errs {
+		if e.Route == key || strings.HasPrefix(e.Route, key+"#") {
+			return routeStatusCondition(route.Generation, false, e.Reason, e.Detail)
+		}
+	}
+	return routeStatusCondition(route.Generation, true, gwapi.RouteReasonAccepted, "accepted by tsjwt")
+}
+
 // routeStatusCondition builds the Accepted condition for a route.
 func routeStatusCondition(gen int64, accepted bool, reason gwapi.RouteConditionReason, msg string) metav1.Condition {
 	status := metav1.ConditionTrue

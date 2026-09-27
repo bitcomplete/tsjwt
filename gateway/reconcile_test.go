@@ -51,7 +51,7 @@ func newReconciler(t *testing.T, objs ...client.Object) (*gateway.GatewayReconci
 	c := fake.NewClientBuilder().
 		WithScheme(reconcileScheme(t)).
 		WithObjects(objs...).
-		WithStatusSubresource(&gwapi.Gateway{}, &gwapi.GatewayClass{}).
+		WithStatusSubresource(&gwapi.Gateway{}, &gwapi.GatewayClass{}, &gwapi.HTTPRoute{}).
 		Build()
 	return &gateway.GatewayReconciler{
 		Client: c,
