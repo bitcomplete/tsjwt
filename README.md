@@ -26,10 +26,10 @@ sequenceDiagram
 
     C->>G: request, over WireGuard
     G->>T: WhoIs(peer)?
-    T-->>G: identity — who, tenants, roles<br/>(the caller cannot forge this)
-    Note over G: mint ES256 JWT — short-lived (5 min),<br/>unique jti, scoped to this backend's audience;<br/>strip any inbound assertion header first
+    T-->>G: the verified identity, its tenants and roles
+    Note over G: mint a short-lived ES256 JWT,<br/>scoped to this backend audience,<br/>strip any inbound copy of the header
     G->>B: request + X-Tailnet-Jwt-Assertion
-    Note over B: verify the signature against the<br/>published JWKS (public keys only) —<br/>no shared secret, no network trust
+    Note over B: verify the signature against the<br/>published key set, public keys only
     B-->>C: response
 ```
 
