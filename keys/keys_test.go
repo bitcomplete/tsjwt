@@ -56,11 +56,8 @@ func TestRotateOldKeyVerifiesDuringOverlapWindow(t *testing.T) {
 
 	// Manually verify the key is in the set
 	pub1, ok := set.PublicKey(kid1)
-	if !ok {
-		t.Error("Current key not found in set after NewSet")
-	}
-	if pub1 == nil {
-		t.Error("PublicKey returned nil for current kid")
+	if !ok || pub1 == nil {
+		t.Fatal("PublicKey did not return the current key after NewSet")
 	}
 
 	// Verify it matches the private key
@@ -139,7 +136,7 @@ func TestRotateOldKeyDoesNotVerifyAfterOverlap(t *testing.T) {
 	laterSet.current = set.current
 	laterSet.retired = set.retired
 
-	pub, exists = laterSet.PublicKey(kid1)
+	_, exists = laterSet.PublicKey(kid1)
 	if exists {
 		t.Error("old key should not exist after overlap window expired")
 	}

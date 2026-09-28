@@ -238,3 +238,25 @@ jobs:
           govulncheck ./...
           (cd tsnetid && govulncheck ./...)
           (cd gateway && govulncheck ./...)
+
+  # Static analysis across every module. The standard linter set (errcheck,
+  # govet, ineffassign, staticcheck, unused); configuration is in
+  # .golangci.yml at the repo root, which each module picks up by upward search.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.26'}
+      - name: Install golangci-lint
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
+      - name: Lint every module
+        run: |
+          set -euo pipefail
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          golangci-lint run ./...
+          (cd tsnetid && golangci-lint run ./...)
+          (cd gateway && golangci-lint run ./...)
