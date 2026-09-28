@@ -56,6 +56,13 @@ single-use; both are weaker than confining the hop. Restrict who reaches the
 backend (a network policy), and keep the lifetime short. This is the same
 trust that every identity-aware proxy places in the network behind it.
 
+The shipped replay guard is per-process: it protects one backend instance. A
+horizontally scaled backend needs a shared store behind the `ReplayGuard`
+interface (the interface exists so one can be plugged in); running more than
+one replica with the in-memory guard gives false comfort, not protection. No
+shared implementation ships here on purpose — it would pull in a datastore the
+generic library has no business choosing.
+
 ## What is not in scope
 
 * **A stolen device.** A person with an unlocked device gets the identity of
