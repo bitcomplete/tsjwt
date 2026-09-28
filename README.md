@@ -14,6 +14,29 @@ The trust boundary collapses from a whole network range to one private key.
 This is the identity-aware proxy pattern, the same shape as Cloudflare
 Access `Cf-Access-Jwt-Assertion` and Google IAP `X-Goog-Iap-Jwt-Assertion`.
 
+## How it works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Caller<br/>(tailnet device)
+    participant G as tsjwt gateway<br/>(signer / data plane)
+    participant T as Tailnet<br/>(trust anchor)
+    participant B as Backend
+
+    C->>G: request, over WireGuard
+    G->>T: WhoIs(peer)?
+    T-->>G: identity — who, tenants, roles<br/>(the caller cannot forge this)
+    Note over G: mint ES256 JWT — short-lived (5 min),<br/>unique jti, scoped to this backend's audience;<br/>strip any inbound assertion header first
+    G->>B: request + X-Tailnet-Jwt-Assertion
+    Note over B: verify the signature against the<br/>published JWKS (public keys only) —<br/>no shared secret, no network trust
+    B-->>C: response
+```
+
+Reaching the port proves nothing; only a token signed by the gateway's private
+key does — and the backend needs only public keys to check it. Identity comes
+from the network (`WhoIs`), not from anything the caller sends.
+
 ## What it is not
 
 It is not tied to any one organisation. Tenancy, role names and group names
