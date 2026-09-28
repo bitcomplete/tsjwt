@@ -24,6 +24,18 @@ import (
 // backend that already expects a particular value.
 const AudienceAnnotation = "tsjwt.dev/audience"
 
+// AllowedAudiencesAnnotation, on a Gateway, lists the custom audiences its
+// routes may request through AudienceAnnotation, comma-separated. It is set by
+// the Gateway owner (the platform), not by a route author, so a route cannot
+// steer the gateway into minting a token for an audience the Gateway has not
+// blessed — which would otherwise defeat the per-backend audience isolation.
+//
+// A route that omits AudienceAnnotation, or sets it to its own backend's
+// derived audience ("<service>.<namespace>"), needs no entry here; only a
+// custom audience does. Two backends behind one Gateway may deliberately share
+// a custom audience by naming it here once.
+const AllowedAudiencesAnnotation = "tsjwt.dev/allowed-audiences"
+
 // TenantAnnotation pins every request on a route to one tenant, whatever the
 // caller asks for.
 const TenantAnnotation = "tsjwt.dev/tenant"
@@ -68,6 +80,10 @@ func Translate(gw *gwapi.Gateway, routes []gwapi.HTTPRoute, services []corev1.Se
 		svc[s.Namespace+"/"+s.Name] = s
 	}
 
+	// Custom audiences a route may request are declared by the Gateway owner,
+	// not by the route author.
+	allowedAud := parseAllowedAudiences(gw.Annotations[AllowedAudiencesAnnotation])
+
 	var out []proxy.Route
 	var errs []RouteError
 
@@ -92,7 +108,7 @@ func Translate(gw *gwapi.Gateway, routes []gwapi.HTTPRoute, services []corev1.Se
 		}
 
 		for ri, rule := range r.Spec.Rules {
-			built, err := translateRule(r, ri, rule, hostnames, svc)
+			built, err := translateRule(r, ri, rule, hostnames, svc, allowedAud)
 			if err != nil {
 				errs = append(errs, *err)
 				continue
@@ -109,7 +125,7 @@ func Translate(gw *gwapi.Gateway, routes []gwapi.HTTPRoute, services []corev1.Se
 
 // translateRule turns one HTTPRouteRule into routes, one per path match.
 func translateRule(r *gwapi.HTTPRoute, ri int, rule gwapi.HTTPRouteRule,
-	hostnames []string, svc map[string]*corev1.Service) ([]proxy.Route, *RouteError) {
+	hostnames []string, svc map[string]*corev1.Service, allowedAud map[string]struct{}) ([]proxy.Route, *RouteError) {
 
 	name := fmt.Sprintf("%s/%s#%d", r.Namespace, r.Name, ri)
 
@@ -164,9 +180,25 @@ func translateRule(r *gwapi.HTTPRoute, ri int, rule gwapi.HTTPRouteRule,
 		return nil, &RouteError{name, gwapi.RouteReasonUnsupportedValue, err.Error()}
 	}
 
+	// The audience is the control that stops a token minted for one backend
+	// being accepted by another, so a route author must not be able to set it
+	// to an arbitrary value. A route may name its own backend's derived
+	// audience, or a custom one the Gateway owner has authorised; anything else
+	// is refused rather than silently minting a token for someone else.
+	derived := fmt.Sprintf("%s.%s", s.Name, s.Namespace)
 	audience := r.Annotations[AudienceAnnotation]
-	if audience == "" {
-		audience = fmt.Sprintf("%s.%s", s.Name, s.Namespace)
+	switch {
+	case audience == "":
+		audience = derived
+	case audience == derived:
+		// Naming your own backend's derived audience is not a forgery.
+	default:
+		if _, ok := allowedAud[audience]; !ok {
+			return nil, &RouteError{name, gwapi.RouteReasonUnsupportedValue,
+				fmt.Sprintf("audience %q is not permitted: a custom audience must be listed in "+
+					"the Gateway's %s annotation, so a route cannot mint a token for a backend "+
+					"the Gateway has not authorised", audience, AllowedAudiencesAnnotation)}
+		}
 	}
 	tenant := r.Annotations[TenantAnnotation]
 	claimHeaders, err := parseClaimHeaders(r.Annotations[ClaimHeadersAnnotation])
@@ -427,6 +459,19 @@ func RenderFor(gateway string, revision int64, routes []proxy.Route) routetable.
 //
 // An unknown claim name is refused rather than ignored: a header that
 // silently never appears looks like the backend is at fault.
+// parseAllowedAudiences reads a Gateway's allowed-audiences annotation into a
+// set. An empty annotation is an empty set, so by default no custom audience is
+// permitted and routes fall back to their backend-derived audience.
+func parseAllowedAudiences(v string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, a := range strings.Split(v, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			out[a] = struct{}{}
+		}
+	}
+	return out
+}
+
 func parseClaimHeaders(v string) (map[string]string, error) {
 	if strings.TrimSpace(v) == "" {
 		return nil, nil
