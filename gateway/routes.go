@@ -24,7 +24,7 @@ import (
 // backend that already expects a particular value.
 const AudienceAnnotation = "tsjwt.dev/audience"
 
-// AllowedAudiencesAnnotation, on a Gateway, lists the custom audiences its
+// AllowedAudiencesAnnotation lists, on a Gateway, the custom audiences its
 // routes may request through AudienceAnnotation, comma-separated. It is set by
 // the Gateway owner (the platform), not by a route author, so a route cannot
 // steer the gateway into minting a token for an audience the Gateway has not
@@ -187,10 +187,10 @@ func translateRule(r *gwapi.HTTPRoute, ri int, rule gwapi.HTTPRouteRule,
 	// is refused rather than silently minting a token for someone else.
 	derived := fmt.Sprintf("%s.%s", s.Name, s.Namespace)
 	audience := r.Annotations[AudienceAnnotation]
-	switch {
-	case audience == "":
+	switch audience {
+	case "":
 		audience = derived
-	case audience == derived:
+	case derived:
 		// Naming your own backend's derived audience is not a forgery.
 	default:
 		if _, ok := allowedAud[audience]; !ok {
