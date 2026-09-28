@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"sync"
 	"time"
 )
@@ -237,9 +236,36 @@ func PublicFromXY(x, y string) (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("keys: y is not base64url")
 	}
-	pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(xb), Y: new(big.Int).SetBytes(yb)}
-	if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
-		return nil, fmt.Errorf("keys: point is not on P-256")
+	xb, ok := coordBytes(xb)
+	if !ok {
+		return nil, fmt.Errorf("keys: x is not a P-256 coordinate")
+	}
+	yb, ok = coordBytes(yb)
+	if !ok {
+		return nil, fmt.Errorf("keys: y is not a P-256 coordinate")
+	}
+	// Build the SEC 1 uncompressed encoding (0x04 || x || y) and let the stdlib
+	// parse and validate it in one step. ParseUncompressedPublicKey rejects a
+	// point that is not on the curve or is the point at infinity — replacing a
+	// manual (and since Go 1.21 deprecated) Curve.IsOnCurve check.
+	uncompressed := make([]byte, 0, 1+len(xb)+len(yb))
+	uncompressed = append(append(append(uncompressed, 4), xb...), yb...)
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), uncompressed)
+	if err != nil {
+		return nil, fmt.Errorf("keys: invalid P-256 public key: %w", err)
 	}
 	return pub, nil
+}
+
+// coordBytes left-pads an affine coordinate to the 32 bytes P-256 requires,
+// rejecting an over-long input. A compliant JWK carries exactly 32 bytes
+// (RFC 7518 §6.2.1.2); left-padding also tolerates a producer that stripped
+// leading zeros, while a longer value is not a valid coordinate.
+func coordBytes(b []byte) ([]byte, bool) {
+	if len(b) > 32 {
+		return nil, false
+	}
+	out := make([]byte, 32)
+	copy(out[32-len(b):], b)
+	return out, true
 }

@@ -3,11 +3,8 @@ package verifier
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"sync"
 	"time"
@@ -201,23 +198,12 @@ func jwkToPublic(j keys.JWK) (*ecdsa.PublicKey, error) {
 	if j.Use != "" && j.Use != "sig" {
 		return nil, fmt.Errorf("key is not for signatures")
 	}
-	x, err := base64.RawURLEncoding.DecodeString(j.X)
+	// Coordinate decode and on-curve validation live in keys.PublicFromXY,
+	// which uses the stdlib's ParseUncompressedPublicKey to reject an off-curve
+	// point or the point at infinity. One source of truth, no deprecated API.
+	pub, err := keys.PublicFromXY(j.X, j.Y)
 	if err != nil {
-		return nil, fmt.Errorf("x is not base64url")
-	}
-	y, err := base64.RawURLEncoding.DecodeString(j.Y)
-	if err != nil {
-		return nil, fmt.Errorf("y is not base64url")
-	}
-	pub := &ecdsa.PublicKey{
-		Curve: elliptic.P256(),
-		X:     new(big.Int).SetBytes(x),
-		Y:     new(big.Int).SetBytes(y),
-	}
-	// Reject a point that is not on the curve. Without this check a
-	// malformed or hostile key set could supply an invalid point.
-	if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
-		return nil, fmt.Errorf("point is not on P-256")
+		return nil, err
 	}
 	// The kid is defined as the RFC 7638 thumbprint of the key, so verify the
 	// declared kid actually derives from this key. Otherwise a publisher could
