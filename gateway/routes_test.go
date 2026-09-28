@@ -198,6 +198,9 @@ func TestUnattachedRouteIsIgnored(t *testing.T) {
 func TestAnnotationsOverride(t *testing.T) {
 	t.Parallel()
 	g := gw("edge", "infra")
+	// A custom audience must be authorised by the Gateway owner, so the
+	// override is honoured only when the Gateway allowlists it.
+	g.Annotations = map[string]string{gateway.AllowedAudiencesAnnotation: "legacy-audience"}
 	r := route("app", "infra", "edge", nil, rule("app-svc", 80))
 	r.Annotations = map[string]string{
 		gateway.AudienceAnnotation: "legacy-audience",
