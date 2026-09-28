@@ -221,10 +221,10 @@ func (s *Store) Save(ctx context.Context, entries []keys.Entry, version string) 
 	if err != nil {
 		return fmt.Errorf("k8sstore: save: %w", err)
 	}
-	switch {
-	case code == http.StatusOK || code == http.StatusCreated:
+	switch code {
+	case http.StatusOK, http.StatusCreated:
 		return nil
-	case code == http.StatusConflict:
+	case http.StatusConflict:
 		return keys.ErrConflict
 	default:
 		return fmt.Errorf("k8sstore: save returned %d: %s", code, summarize(respBody))

@@ -43,13 +43,13 @@ func TestRemoteKeysStalenessCeiling(t *testing.T) {
 		Kty string `json:"kty"`
 		X   string `json:"x"`
 		Y   string `json:"y"`
-	}{"P-256", "EC", enc(key.PublicKey.X.Bytes()), enc(key.PublicKey.Y.Bytes())})
+	}{"P-256", "EC", enc(key.X.Bytes()), enc(key.Y.Bytes())})
 	sum := sha256.Sum256(canon)
 	kid := base64.RawURLEncoding.EncodeToString(sum[:])
 
 	jwks, _ := json.Marshal(map[string]any{"keys": []map[string]string{{
 		"kty": "EC", "crv": "P-256", "kid": kid, "use": "sig", "alg": "ES256",
-		"x": enc(key.PublicKey.X.Bytes()), "y": enc(key.PublicKey.Y.Bytes()),
+		"x": enc(key.X.Bytes()), "y": enc(key.Y.Bytes()),
 	}}})
 
 	var up atomic.Bool

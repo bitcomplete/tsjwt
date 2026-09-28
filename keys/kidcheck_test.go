@@ -32,7 +32,7 @@ func TestPublishedJWKSExcludesForgedKid(t *testing.T) {
 		copy(buf[32-len(b):], b)
 		return base64.RawURLEncoding.EncodeToString(buf)
 	}
-	x, y := enc(pk.PublicKey.X.Bytes()), enc(pk.PublicKey.Y.Bytes())
+	x, y := enc(pk.X.Bytes()), enc(pk.Y.Bytes())
 	goodKid, err := keys.Thumbprint(&pk.PublicKey)
 	if err != nil {
 		t.Fatal(err)

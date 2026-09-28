@@ -61,7 +61,7 @@ func TestRotateOldKeyVerifiesDuringOverlapWindow(t *testing.T) {
 	}
 
 	// Verify it matches the private key
-	if pub1.X.Cmp(priv1.PublicKey.X) != 0 || pub1.Y.Cmp(priv1.PublicKey.Y) != 0 {
+	if pub1.X.Cmp(priv1.X) != 0 || pub1.Y.Cmp(priv1.Y) != 0 {
 		t.Error("public key from PublicKey does not match current private key's public key")
 	}
 
@@ -196,8 +196,8 @@ func TestKidIsStableThumbprint(t *testing.T) {
 	}{
 		Crv: "P-256",
 		Kty: "EC",
-		X:   coordHelper(priv3.PublicKey.X.Bytes()),
-		Y:   coordHelper(priv3.PublicKey.Y.Bytes()),
+		X:   coordHelper(priv3.X.Bytes()),
+		Y:   coordHelper(priv3.Y.Bytes()),
 	}
 	b, _ := json.Marshal(canonical)
 

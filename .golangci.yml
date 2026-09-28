@@ -9,21 +9,16 @@ linters:
   default: standard
   settings:
     staticcheck:
-      # The SA* bug checks plus golangci-lint's default set. The ST* doc/naming
-      # checks below are golangci-lint's own defaults (off), kept explicit here
-      # because setting `checks` replaces the default rather than extending it.
+      # All checks (SA bugs, QF quick-fixes, ST doc-comment form, S
+      # simplifications), minus the three most opinionated stylecheck rules:
+      # ST1000 (require a package comment), ST1003 (initialism/naming), and
+      # ST1016 (receiver-name consistency). The QF refactors and the
+      # doc-comment ST checks (ST1020/1021/1022) are on, and the code complies.
       checks:
         - all
         - -ST1000
         - -ST1003
         - -ST1016
-        - -ST1020
-        - -ST1021
-        - -ST1022
-        # QF* are refactor "quick fixes" (tagged switch, drop embedded field),
-        # not defects. Leave them off; they are style, not correctness.
-        - -QF1002
-        - -QF1008
   exclusions:
     # A failed write to an HTTP response, a deferred Close, or an Fprintln to a
     # ResponseWriter cannot be meaningfully handled; the standard preset covers
