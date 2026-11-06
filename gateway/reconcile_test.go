@@ -541,8 +541,8 @@ func TestEphemeralGatewayProvisioningAndReconcile(t *testing.T) {
 				if retention == nil || retention.WhenDeleted != appsv1.DeletePersistentVolumeClaimRetentionPolicyType || retention.WhenScaled != appsv1.RetainPersistentVolumeClaimRetentionPolicyType {
 					t.Fatalf("unexpected retention: %+v", retention)
 				}
-			} else if retention != nil {
-				t.Fatalf("durable Gateway changed retention: %+v", retention)
+			} else if retention == nil || retention.WhenDeleted != appsv1.RetainPersistentVolumeClaimRetentionPolicyType || retention.WhenScaled != appsv1.RetainPersistentVolumeClaimRetentionPolicyType {
+				t.Fatalf("durable Gateway must retain its state: %+v", retention)
 			}
 			if len(sts.OwnerReferences) != 1 || sts.OwnerReferences[0].Kind != "Gateway" {
 				t.Fatal("data plane must be garbage-collected with Gateway")

@@ -311,6 +311,10 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 			Name: n.statefulSet(), Namespace: gw.Namespace, Labels: n.labels(),
 		},
 		Spec: appsv1.StatefulSetSpec{
+			PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+				WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+			},
 			ServiceName:         n.service(),
 			Replicas:            &replicas,
 			PodManagementPolicy: appsv1.ParallelPodManagement,
