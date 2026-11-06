@@ -289,3 +289,55 @@ func TestProxyCountsDemandUntilStreamingResponseEnds(t *testing.T) {
 	}
 	awaitMetric(t, g, "tsjwt_backend_active_requests{upstream="+`"`+backend.URL+`"} 0`)
 }
+
+type changingTenantResolver struct{ grant tsjwt.Grant }
+
+func (r *changingTenantResolver) Resolve(tsjwt.Identity) (tsjwt.Grant, error) { return r.grant, nil }
+
+func TestWaitingRequestPreservesSelectedTenant(t *testing.T) {
+	for _, revoke := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default changes", true: "original access revoked"}[revoke], func(t *testing.T) {
+			tenants := []tsjwt.Tenant{{ID: "original", Roles: []string{"admin"}}, {ID: "other", Roles: []string{"admin"}}}
+			resolver := &changingTenantResolver{grant: tsjwt.Grant{Tenants: tenants, Default: "original"}}
+			set, _ := keys.NewSet()
+			sg, err := signer.New(signer.Config{Issuer: "https://test", Keys: set, Identities: &FakeIdentitySource{identity: tsjwt.Identity{Subject: "user"}}, Tenants: resolver})
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				v, _ := verifier.New(verifier.Config{Issuer: "https://test", Audience: "app", Keys: verifier.LocalKeys{Set: set}})
+				claims, err := v.Verify(r.Context(), r.Header.Get(tsjwt.DefaultHeader))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				io.WriteString(w, claims.Tenant)
+			}))
+			defer backend.Close()
+			u, _ := url.Parse(backend.URL)
+			released := false
+			p, err := proxy.New(proxy.Config{Upstream: u, Audience: "app", Signer: sg, Gate: gateFunc(func(context.Context, proxy.Route) (func(), error) {
+				resolver.grant.Default = "other"
+				if revoke {
+					resolver.grant.Tenants = tenants[1:]
+				}
+				return func() { released = true }, nil
+			})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			p.ServeHTTP(w, httptest.NewRequest("POST", "/", strings.NewReader("tenant-scoped mutation")))
+			if revoke {
+				if w.Code != 403 {
+					t.Fatalf("lost original tenant access: got %d %s", w.Code, w.Body.String())
+				}
+			} else if w.Code != 200 || w.Body.String() != "original" {
+				t.Fatalf("request switched tenant: %d %s", w.Code, w.Body.String())
+			}
+			if !released {
+				t.Fatal("demand not released")
+			}
+		})
+	}
+}

@@ -204,7 +204,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Reauthorize and mint only the assertion forwarded to the app after
 		// waiting. No token minted before a cold start leaves this process.
-		tok, claims, err = p.cfg.Signer.Mint(r.RemoteAddr, route.Audience, tenant)
+		// Preserve the tenant selected on arrival, including a default.
+		// A policy change must revoke this request or retain its tenant,
+		// never redirect a pending mutation into another tenant.
+		tok, claims, err = p.cfg.Signer.Mint(r.RemoteAddr, route.Audience, claims.Tenant)
 		if err != nil {
 			p.refuse(w, r, err)
 			return

@@ -24,7 +24,9 @@ proxy that accepts connections before the target app is ready. Core consumers
 can inject a stronger readiness probe using WaitConfig.Ready.
 
 On readiness, the proxy reauthorizes the caller and mints a fresh assertion,
-then forwards the original request once. It does not retry application requests
+then forwards the original request once. The tenant selected on arrival stays
+pinned through the wait, even if the caller's default changes; loss of access
+to that tenant returns 403 rather than falling back to another tenant. It does not retry application requests
 or replay POST bodies after forwarding. Failure or queue saturation returns 503
 with Retry-After. Waiting does not read/buffer the body; memory used for waiting
 requests is bounded by request limits rather than body size. Active requests,
