@@ -503,3 +503,88 @@ func TestJWKSOverTLSIsPerGateway(t *testing.T) {
 		})
 	}
 }
+
+func TestEphemeralGatewayProvisioningAndReconcile(t *testing.T) {
+	for _, ephemeral := range []bool{false, true} {
+		name := "durable"
+		if ephemeral {
+			name = "ephemeral"
+		}
+		t.Run(name, func(t *testing.T) {
+			gc := gatewayClass("tsjwt", gateway.ControllerName)
+			g := gatewayWithClass("preview-demo-pr-1", "infra", "tsjwt", "demo-pr-1.example.ts.net")
+			if ephemeral {
+				g.Annotations = map[string]string{gateway.EphemeralAnnotation: "true"}
+			}
+			hr := route("app", "infra", g.Name, nil, rule("app", 3000))
+			s := svc("app", "infra", 3000)
+			r, c := newReconciler(t, gc, g, &hr, &s)
+			ctx := context.Background()
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: g.Namespace, Name: g.Name}}); err != nil {
+				t.Fatal(err)
+			}
+			var sts appsv1.StatefulSet
+			if err := c.Get(ctx, types.NamespacedName{Namespace: "infra", Name: "tsjwt-" + g.Name}, &sts); err != nil {
+				t.Fatal(err)
+			}
+			hasFlag := false
+			for _, arg := range sts.Spec.Template.Spec.Containers[0].Args {
+				if arg == "-ephemeral" {
+					hasFlag = true
+				}
+			}
+			if hasFlag != ephemeral {
+				t.Fatalf("ephemeral flag=%v, want %v", hasFlag, ephemeral)
+			}
+			retention := sts.Spec.PersistentVolumeClaimRetentionPolicy
+			if ephemeral {
+				if retention == nil || retention.WhenDeleted != appsv1.DeletePersistentVolumeClaimRetentionPolicyType || retention.WhenScaled != appsv1.RetainPersistentVolumeClaimRetentionPolicyType {
+					t.Fatalf("unexpected retention: %+v", retention)
+				}
+			} else if retention == nil || retention.WhenDeleted != appsv1.RetainPersistentVolumeClaimRetentionPolicyType || retention.WhenScaled != appsv1.RetainPersistentVolumeClaimRetentionPolicyType {
+				t.Fatalf("durable Gateway must retain its state: %+v", retention)
+			}
+			if len(sts.OwnerReferences) != 1 || sts.OwnerReferences[0].Kind != "Gateway" {
+				t.Fatal("data plane must be garbage-collected with Gateway")
+			}
+		})
+	}
+}
+
+func TestPreviewBridgeUsesDistinctAudienceAndIssuer(t *testing.T) {
+	var audiences = map[string]bool{}
+	for _, name := range []string{"preview-demo-pr-1", "preview-demo-pr-2"} {
+		g := gatewayWithClass(name, "infra", "tsjwt", strings.TrimPrefix(name, "preview-")+".example.ts.net")
+		hr := route(name, "infra", name, nil, rule(name, 3000))
+		hr.Annotations = map[string]string{gateway.TenantAnnotation: "example"}
+		backend := svc(name, "infra", 3000)
+		backend.Spec.Type = corev1.ServiceTypeExternalName
+		backend.Spec.ExternalName = "frontend." + strings.TrimPrefix(name, "preview-") + ".svc.cluster.local"
+		translated, errs := gateway.Translate(g, []gwapi.HTTPRoute{hr}, []corev1.Service{backend})
+		if len(errs) != 0 || len(translated) != 1 {
+			t.Fatalf("route rejected: %v", errs)
+		}
+		route := translated[0]
+		if route.Audience != name+".infra" || route.Tenant != "example" {
+			t.Fatalf("unexpected assertion contract: %+v", route)
+		}
+		if audiences[route.Audience] {
+			t.Fatal("previews share an audience")
+		}
+		audiences[route.Audience] = true
+		sts, err := gateway.StatefulSet(g, gateway.Config{Image: "img", CredentialSecret: "creds", Tag: "tag:example"}, "tenants")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "-issuer=https://" + strings.TrimPrefix(name, "preview-")
+		found := false
+		for _, arg := range sts.Spec.Template.Spec.Containers[0].Args {
+			if arg == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing issuer %s", want)
+		}
+	}
+}

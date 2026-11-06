@@ -153,6 +153,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		sts.Spec.ServiceName = want.Spec.ServiceName
 		sts.Spec.PodManagementPolicy = want.Spec.PodManagementPolicy
 		sts.Spec.Template = want.Spec.Template
+		sts.Spec.PersistentVolumeClaimRetentionPolicy = want.Spec.PersistentVolumeClaimRetentionPolicy
 		if len(sts.Spec.VolumeClaimTemplates) == 0 {
 			sts.Spec.VolumeClaimTemplates = want.Spec.VolumeClaimTemplates
 		}

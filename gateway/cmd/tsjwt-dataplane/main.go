@@ -63,6 +63,7 @@ func run() error {
 		rotate     = flag.Duration("rotate", 24*time.Hour, "signing key rotation interval")
 		overlap    = flag.Duration("overlap", time.Hour, "how long a retired key still verifies")
 		resync     = flag.Duration("resync", 5*time.Second, "how often to re-read routes")
+		ephemeral  = flag.Bool("ephemeral", false, "register an ephemeral tailnet node removed automatically after going offline")
 		keyTags    = flag.String("key-tags", "", "comma-separated tags for an auth key minted at startup")
 		shareCM    = flag.String("share-keys", "", "publish verification keys to this ConfigMap")
 		plaintext  = flag.Bool("plaintext", false, "serve HTTP instead of HTTPS")
@@ -106,7 +107,7 @@ func run() error {
 		}
 		mctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		minted, err := (&tsnetid.AuthKeyMinter{
-			ClientID: id, ClientSecret: secret, Tags: strings.Split(*keyTags, ","),
+			ClientID: id, ClientSecret: secret, Tags: strings.Split(*keyTags, ","), Ephemeral: *ephemeral,
 		}).Mint(mctx)
 		cancel()
 		if err != nil {
@@ -118,7 +119,7 @@ func run() error {
 			"unhealthyAt", expiry.DeadlineAt().UTC().Format(time.RFC3339))
 	}
 
-	ts := &tsnet.Server{Hostname: *hostname, Dir: *stateDir, AuthKey: authKey,
+	ts := &tsnet.Server{Hostname: *hostname, Dir: *stateDir, AuthKey: authKey, Ephemeral: *ephemeral,
 		Logf: func(string, ...any) {}}
 	defer ts.Close()
 

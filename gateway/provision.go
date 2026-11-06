@@ -13,6 +13,10 @@ import (
 	gwapi "sigs.k8s.io/gateway-api/apis/v1"
 )
 
+// EphemeralAnnotation opts a disposable Gateway into ephemeral tailnet identity
+// and deletion of its state PVC when the Gateway's StatefulSet is removed.
+const EphemeralAnnotation = "tsjwt.dev/ephemeral"
+
 // Config is what the controller needs to know about its own deployment in
 // order to provision data planes that look like it.
 type Config struct {
@@ -307,6 +311,10 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 			Name: n.statefulSet(), Namespace: gw.Namespace, Labels: n.labels(),
 		},
 		Spec: appsv1.StatefulSetSpec{
+			PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+				WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+			},
 			ServiceName:         n.service(),
 			Replicas:            &replicas,
 			PodManagementPolicy: appsv1.ParallelPodManagement,
@@ -401,6 +409,13 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 				},
 			}},
 		},
+	}
+	if gw.Annotations[EphemeralAnnotation] == "true" {
+		sts.Spec.Template.Spec.Containers[0].Args = append(sts.Spec.Template.Spec.Containers[0].Args, "-ephemeral")
+		sts.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+			WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+			WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+		}
 	}
 	if cfg.StorageClass != "" {
 		sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName = &cfg.StorageClass
