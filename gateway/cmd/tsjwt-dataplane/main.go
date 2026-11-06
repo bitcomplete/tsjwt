@@ -47,28 +47,33 @@ func main() {
 
 func run() error {
 	var (
-		gatewayRef = flag.String("gateway", "", "the Gateway this serves, as namespace/name (required)")
-		routesPath = flag.String("routes", "/etc/tsjwt/routes.json", "the rendered route table, normally a mounted ConfigMap")
-		routeCache = flag.String("route-cache", "", "where to keep the last table that parsed, so a restart during an outage still has routes; defaults to <state-dir>/routes.cache.json")
-		hostname   = flag.String("hostname", "", "tailnet hostname; defaults to the Gateway name")
-		stateDir   = flag.String("state-dir", "/var/lib/tsjwt", "directory for tailnet node state")
-		issuer     = flag.String("issuer", "", "iss claim; defaults to https://<hostname>")
-		tenants    = flag.String("tenants", "", "path to the tenant policy JSON file (required)")
-		listen     = flag.String("listen", ":443", "tailnet address to listen on")
-		jwksListen = flag.String("jwks-listen", "0.0.0.0:9100", "ordinary address for the key set and health")
-		header     = flag.String("header", tsjwt.DefaultHeader, "header the assertion is injected into")
-		bearer     = flag.Bool("bearer", false, `write the assertion as "Bearer <token>"`)
-		capName    = flag.String("cap", string(tsnetid.CapGroups), "tailnet capability carrying the caller's groups")
-		ttl        = flag.Duration("ttl", signer.DefaultTTL, "token lifetime")
-		rotate     = flag.Duration("rotate", 24*time.Hour, "signing key rotation interval")
-		overlap    = flag.Duration("overlap", time.Hour, "how long a retired key still verifies")
-		resync     = flag.Duration("resync", 5*time.Second, "how often to re-read routes")
-		keyTags    = flag.String("key-tags", "", "comma-separated tags for an auth key minted at startup")
-		shareCM    = flag.String("share-keys", "", "publish verification keys to this ConfigMap")
-		plaintext  = flag.Bool("plaintext", false, "serve HTTP instead of HTTPS")
-		jwksTLS    = flag.Bool("jwks-tls", false, "serve the key set over HTTPS, using this node's own certificate")
+		waitTimeout = flag.Duration("backend-wait-timeout", 0, "hold authorized requests for backend readiness; zero disables waiting")
+		waitPending = flag.Int("backend-wait-max-pending", 128, "maximum waiting requests per upstream")
+		gatewayRef  = flag.String("gateway", "", "the Gateway this serves, as namespace/name (required)")
+		routesPath  = flag.String("routes", "/etc/tsjwt/routes.json", "the rendered route table, normally a mounted ConfigMap")
+		routeCache  = flag.String("route-cache", "", "where to keep the last table that parsed, so a restart during an outage still has routes; defaults to <state-dir>/routes.cache.json")
+		hostname    = flag.String("hostname", "", "tailnet hostname; defaults to the Gateway name")
+		stateDir    = flag.String("state-dir", "/var/lib/tsjwt", "directory for tailnet node state")
+		issuer      = flag.String("issuer", "", "iss claim; defaults to https://<hostname>")
+		tenants     = flag.String("tenants", "", "path to the tenant policy JSON file (required)")
+		listen      = flag.String("listen", ":443", "tailnet address to listen on")
+		jwksListen  = flag.String("jwks-listen", "0.0.0.0:9100", "ordinary address for the key set and health")
+		header      = flag.String("header", tsjwt.DefaultHeader, "header the assertion is injected into")
+		bearer      = flag.Bool("bearer", false, `write the assertion as "Bearer <token>"`)
+		capName     = flag.String("cap", string(tsnetid.CapGroups), "tailnet capability carrying the caller's groups")
+		ttl         = flag.Duration("ttl", signer.DefaultTTL, "token lifetime")
+		rotate      = flag.Duration("rotate", 24*time.Hour, "signing key rotation interval")
+		overlap     = flag.Duration("overlap", time.Hour, "how long a retired key still verifies")
+		resync      = flag.Duration("resync", 5*time.Second, "how often to re-read routes")
+		keyTags     = flag.String("key-tags", "", "comma-separated tags for an auth key minted at startup")
+		shareCM     = flag.String("share-keys", "", "publish verification keys to this ConfigMap")
+		plaintext   = flag.Bool("plaintext", false, "serve HTTP instead of HTTPS")
+		jwksTLS     = flag.Bool("jwks-tls", false, "serve the key set over HTTPS, using this node's own certificate")
 	)
 	flag.Parse()
+	if *waitTimeout < 0 || *waitTimeout > 2*time.Minute || *waitPending <= 0 {
+		return errors.New("backend waiting requires a timeout between 0 and 2m and a positive pending limit")
+	}
 
 	ns, name, ok := strings.Cut(*gatewayRef, "/")
 	if !ok || ns == "" || name == "" {
@@ -184,8 +189,20 @@ func run() error {
 	// The route table starts empty. That is not an error state: a Gateway
 	// with no routes yet answers 503, which tells a caller to retry rather
 	// than that the path is wrong.
+	var gate *proxy.WaitGate
+	var requestGate proxy.RequestGate
+	if *waitTimeout < 0 {
+		return errors.New("-backend-wait-timeout must not be negative")
+	}
+	if *waitTimeout > 0 {
+		gate, err = proxy.NewWaitGate(proxy.WaitConfig{Timeout: *waitTimeout, Interval: 250 * time.Millisecond, MaxPending: *waitPending, MaxBackends: 256})
+		if err != nil {
+			return err
+		}
+		requestGate = gate
+	}
 	dyn, err := proxy.NewDynamic(proxy.Config{
-		Signer: sg, Header: *header, Bearer: *bearer,
+		Signer: sg, Header: *header, Bearer: *bearer, Gate: requestGate,
 	}, nil)
 	if err != nil {
 		return err
@@ -286,6 +303,9 @@ func run() error {
 	})
 	// Fixed, small payloads (JWKS and a status line): bound the whole
 	// request and response, not just the header, against a slow client.
+	if gate != nil {
+		ops.Handle("/metrics", gate)
+	}
 	opsSrv := &http.Server{
 		Addr:              *jwksListen,
 		Handler:           ops,
