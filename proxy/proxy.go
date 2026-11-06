@@ -63,6 +63,9 @@ type Config struct {
 	// a gateway; see newTransport for why the default is not suitable.
 	Transport http.RoundTripper
 
+	// Gate optionally holds authorized requests until the backend is ready.
+	Gate RequestGate
+
 	// MaxIdleConnsPerHost bounds kept-alive connections to each backend.
 	// Zero uses a gateway-appropriate default. Ignored when Transport is
 	// set.
@@ -186,6 +189,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.refuse(w, r, err)
 		return
+	}
+	if p.cfg.Gate != nil {
+		release, waitErr := p.cfg.Gate.Acquire(r.Context(), route)
+		if waitErr != nil {
+			p.log.Warn("backend wait failed", "route", route.Name, "err", waitErr)
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "backend unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+		if r.Context().Err() != nil {
+			return
+		}
+		// Reauthorize and mint only the assertion forwarded to the app after
+		// waiting. No token minted before a cold start leaves this process.
+		// Preserve the tenant selected on arrival, including a default.
+		// A policy change must revoke this request or retain its tenant,
+		// never redirect a pending mutation into another tenant.
+		tok, claims, err = p.cfg.Signer.Mint(r.RemoteAddr, route.Audience, claims.Tenant)
+		if err != nil {
+			p.refuse(w, r, err)
+			return
+		}
 	}
 	if p.cfg.Bearer {
 		r.Header.Set(p.cfg.Header, "Bearer "+tok)

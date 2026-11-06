@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -191,6 +192,11 @@ func DataPlaneServiceAccount(gw *gwapi.Gateway) *corev1.ServiceAccount {
 // So it is per Gateway, and defaults off.
 const JWKSOverTLSAnnotation = "tsjwt.dev/jwks-tls"
 
+// BackendWaitAnnotation opts one Gateway into bounded backend waiting. The
+// value is a positive Go duration of at most two minutes. This enables demand
+// metrics but never creates an autoscaler or changes application replicas.
+const BackendWaitAnnotation = "tsjwt.dev/backend-wait-timeout"
+
 // KeysRole lets one Gateway's data planes publish their verification keys,
 // and nothing else.
 //
@@ -257,6 +263,13 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 	if cfg.Tag == "" {
 		return nil, fmt.Errorf("gateway: Config.Tag is required")
 	}
+	wait := gw.Annotations[BackendWaitAnnotation]
+	if wait != "" {
+		d, err := time.ParseDuration(wait)
+		if err != nil || d <= 0 || d > 2*time.Minute {
+			return nil, fmt.Errorf("gateway: %s must be a positive duration no greater than 2m", BackendWaitAnnotation)
+		}
+	}
 	n := names{gw}
 	replicas := int32(1)
 
@@ -284,6 +297,9 @@ func StatefulSet(gw *gwapi.Gateway, cfg Config, tenantsConfigMap string) (*appsv
 		"-share-keys=" + n.keys(),
 	}
 
+	if wait != "" {
+		args = append(args, "-backend-wait-timeout="+wait)
+	}
 	env := []corev1.EnvVar{
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
 			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
