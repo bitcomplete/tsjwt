@@ -315,3 +315,7 @@ Prototype, running in one deployment. The API may change.
 The one assumption that is not yet measured: that a hostile peer cannot
 change what the identity source reports about it. Everything else here rests
 on that. See [SECURITY.md](SECURITY.md).
+
+Disposable Kubernetes Gateways can opt into ephemeral tailnet identity and state
+cleanup with `tsjwt.dev/ephemeral: "true"`; see
+[gateway deployment](gateway/deploy/README.md#disposable-gateways).

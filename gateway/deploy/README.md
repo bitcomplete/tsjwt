@@ -33,3 +33,13 @@ controller provisioning data planes from a name that cannot be pulled.
 
 Then a `Gateway` using the `tsjwt` class provisions its own data plane, and an
 `HTTPRoute` attaches a backend to it.
+
+## Disposable Gateways
+
+Set `tsjwt.dev/ephemeral: "true"` on a Gateway used for a disposable preview.
+The controller adds `-ephemeral` to its data plane, which mints an ephemeral auth
+key and registers an ephemeral tsnet node. Tailscale logs it out during graceful
+shutdown; after a forced shutdown it is removed after the tailnet's offline
+timeout. The state PVC is deleted with the StatefulSet, but retained on scale-down.
+Unannotated Gateways keep their existing durable identity and storage behavior.
+Deploy the matching controller and data-plane versions before using this option.
